@@ -525,18 +525,11 @@ function shouldResolveUpdatedEditText(
   return typeof message.dateEdited === "number" && message.dateEdited > 0;
 }
 
-function hasExplicitChatContext(message: NormalizedWebhookMessage): boolean {
+function hasStableChatContext(message: NormalizedWebhookMessage): boolean {
   const hasChatGuid = Boolean(message.chatGuid?.trim());
   const hasChatIdentifier = Boolean(message.chatIdentifier?.trim());
   const hasChatId = typeof message.chatId === "number" && Number.isFinite(message.chatId);
-  return Boolean(
-    hasChatGuid ||
-    hasChatIdentifier ||
-    hasChatId ||
-    message.hasConversationLabel ||
-    message.hasExplicitGroupChatFlag ||
-    message.hasMessageIdFull,
-  );
+  return Boolean(hasChatGuid || hasChatIdentifier || hasChatId);
 }
 
 function shouldDropMentionOnlyDirectPayload(message: NormalizedWebhookMessage): boolean {
@@ -546,7 +539,20 @@ function shouldDropMentionOnlyDirectPayload(message: NormalizedWebhookMessage): 
   if (message.explicitWasMentioned !== true) {
     return false;
   }
-  return !hasExplicitChatContext(message);
+  return !hasStableChatContext(message);
+}
+
+function shouldDropAmbiguousDirectMirrorPayload(message: NormalizedWebhookMessage): boolean {
+  if (message.isGroup) {
+    return false;
+  }
+  if (message.hasExplicitGroupChatFlag !== true) {
+    return false;
+  }
+  if (message.hasConversationLabel !== true || message.hasMessageIdFull !== true) {
+    return false;
+  }
+  return !hasStableChatContext(message);
 }
 
 export async function handleBlueBubblesWebhookRequest(
@@ -709,6 +715,17 @@ export async function handleBlueBubblesWebhookRequest(
         target.core,
         target.runtime,
         `webhook dropped ambiguous mention-only direct payload sender=${hydratedMessage.senderId} msg=${hydratedMessage.messageId ?? ""}`,
+      );
+      res.statusCode = 200;
+      res.end("ok");
+      return true;
+    }
+
+    if (shouldDropAmbiguousDirectMirrorPayload(hydratedMessage)) {
+      logVerbose(
+        target.core,
+        target.runtime,
+        `webhook dropped ambiguous direct mirror payload sender=${hydratedMessage.senderId} msg=${hydratedMessage.messageId ?? ""}`,
       );
       res.statusCode = 200;
       res.end("ok");

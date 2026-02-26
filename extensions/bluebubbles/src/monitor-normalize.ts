@@ -275,10 +275,13 @@ function extractChatContext(message: Record<string, unknown>): {
   chatId?: number;
   chatName?: string;
   isGroup: boolean;
+  explicitIsGroupHint?: boolean;
   participants: unknown[];
 } {
   const chat = asRecord(message.chat) ?? asRecord(message.conversation) ?? null;
   const chatFromList = readFirstChatRecord(message);
+  const conversationLabel = extractConversationLabel(message);
+  const chatGuidFromConversationLabel = extractChatGuidFromConversationLabel(conversationLabel);
   const chatGuid =
     readString(message, "chatGuid") ??
     readString(message, "chat_guid") ??
@@ -287,7 +290,8 @@ function extractChatContext(message: Record<string, unknown>): {
     readString(chat, "guid") ??
     readString(chatFromList, "chatGuid") ??
     readString(chatFromList, "chat_guid") ??
-    readString(chatFromList, "guid");
+    readString(chatFromList, "guid") ??
+    chatGuidFromConversationLabel;
   const chatIdentifier =
     readString(message, "chatIdentifier") ??
     readString(message, "chat_identifier") ??
@@ -327,10 +331,21 @@ function extractChatContext(message: Record<string, unknown>): {
         : [];
   const participantsCount = participants.length;
   const groupFromChatGuid = resolveGroupFlagFromChatGuid(chatGuid);
+  const explicitGroupChatHint =
+    readBoolean(message, "isGroupChat") ??
+    readBoolean(message, "is_group_chat") ??
+    readBoolean(chat, "isGroupChat") ??
+    readBoolean(chat, "is_group_chat") ??
+    readBoolean(chatFromList, "isGroupChat") ??
+    readBoolean(chatFromList, "is_group_chat");
   const explicitIsGroup =
+    explicitGroupChatHint ??
     readBoolean(message, "isGroup") ??
     readBoolean(message, "is_group") ??
     readBoolean(chat, "isGroup") ??
+    readBoolean(chat, "is_group") ??
+    readBoolean(chatFromList, "isGroup") ??
+    readBoolean(chatFromList, "is_group") ??
     readBoolean(message, "group");
   const isGroup =
     typeof groupFromChatGuid === "boolean"
@@ -343,6 +358,7 @@ function extractChatContext(message: Record<string, unknown>): {
     chatId,
     chatName,
     isGroup,
+    explicitIsGroupHint: explicitIsGroup,
     participants,
   };
 }
@@ -469,6 +485,26 @@ function extractChatIdentifierFromChatGuid(chatGuid?: string | null): string | u
   return identifier || undefined;
 }
 
+function extractConversationLabel(message: Record<string, unknown>): string | undefined {
+  return readString(message, "conversationLabel") ?? readString(message, "conversation_label");
+}
+
+function extractChatGuidFromConversationLabel(conversationLabel?: string): string | undefined {
+  const label = conversationLabel?.trim();
+  if (!label) {
+    return undefined;
+  }
+  const markerIndex = label.toLowerCase().lastIndexOf("id:");
+  if (markerIndex < 0) {
+    return undefined;
+  }
+  const chatGuid = label.slice(markerIndex + 3).trim();
+  if (!chatGuid) {
+    return undefined;
+  }
+  return resolveGroupFlagFromChatGuid(chatGuid) === true ? chatGuid : undefined;
+}
+
 export function formatGroupAllowlistEntry(params: {
   chatGuid?: string;
   chatId?: number;
@@ -518,6 +554,7 @@ export type NormalizedWebhookMessage = {
   replyToSender?: string;
   itemType?: number;
   dateEdited?: number;
+  explicitIsGroupHint?: boolean;
   explicitWasMentioned?: boolean;
   hasConversationLabel?: boolean;
   hasExplicitGroupChatFlag?: boolean;
@@ -735,7 +772,7 @@ export function normalizeWebhookMessage(
     "";
 
   const { senderId, senderName } = extractSenderInfo(message);
-  const { chatGuid, chatIdentifier, chatId, chatName, isGroup, participants } =
+  const { chatGuid, chatIdentifier, chatId, chatName, isGroup, explicitIsGroupHint, participants } =
     extractChatContext(message);
   const normalizedParticipants = normalizeParticipantList(participants);
 
@@ -826,6 +863,7 @@ export function normalizeWebhookMessage(
     replyToSender: replyMetadata.replyToSender,
     itemType,
     dateEdited,
+    explicitIsGroupHint,
     explicitWasMentioned,
     hasConversationLabel,
     hasExplicitGroupChatFlag,

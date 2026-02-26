@@ -53,6 +53,44 @@ describe("normalizeWebhookMessage", () => {
     expect(result).not.toBeNull();
     expect(result?.senderId).toBe("+15551234567");
   });
+
+  it("promotes group-hint metadata to group chat context", () => {
+    const result = normalizeWebhookMessage({
+      type: "new-message",
+      data: {
+        guid: "msg-1",
+        text: "hello group",
+        handle: { address: "+15551234567" },
+        is_group_chat: true,
+        conversation_label: "Group id:any;+;7a77739c144e46798b4747b98ebe63a4",
+        isFromMe: false,
+      },
+    });
+
+    expect(result).not.toBeNull();
+    expect(result?.isGroup).toBe(true);
+    expect(result?.chatGuid).toBe("any;+;7a77739c144e46798b4747b98ebe63a4");
+    expect(result?.chatIdentifier).toBe("7a77739c144e46798b4747b98ebe63a4");
+    expect(result?.explicitIsGroupHint).toBe(true);
+  });
+
+  it("does not treat DM conversation labels as group chat GUIDs", () => {
+    const result = normalizeWebhookMessage({
+      type: "new-message",
+      data: {
+        guid: "msg-1",
+        text: "hello",
+        handle: { address: "+15551234567" },
+        conversation_label: "Alice id:+15551234567",
+        is_group_chat: false,
+        isFromMe: false,
+      },
+    });
+
+    expect(result).not.toBeNull();
+    expect(result?.isGroup).toBe(false);
+    expect(result?.chatGuid).toBeUndefined();
+  });
 });
 
 describe("normalizeWebhookReaction", () => {
