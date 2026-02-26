@@ -364,9 +364,12 @@ describe("initSessionState thread forking", () => {
 
     expect(result.sessionEntry.forkedFromParent).toBe(true);
     expect(result.sessionEntry.sessionFile).toBeTruthy();
-    const forkedContent = await fs.readFile(result.sessionEntry.sessionFile ?? "", "utf-8");
-    const [headerLine] = forkedContent.split(/\r?\n/).filter((line) => line.trim().length > 0);
-    const parsedHeader = JSON.parse(headerLine) as { parentSession?: string };
+    const [headerLine] = (await fs.readFile(result.sessionEntry.sessionFile ?? "", "utf-8"))
+      .split(/\r?\n/)
+      .filter((line) => line.trim().length > 0);
+    const parsedHeader = JSON.parse(headerLine) as {
+      parentSession?: string;
+    };
     const expectedParentSession = await fs.realpath(parentSessionFile);
     const actualParentSession = parsedHeader.parentSession
       ? await fs.realpath(parsedHeader.parentSession)
