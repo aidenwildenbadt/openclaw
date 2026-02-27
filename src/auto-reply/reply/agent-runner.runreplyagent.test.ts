@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { queueEmbeddedPiMessage } from "../../agents/pi-embedded.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import * as sessions from "../../config/sessions.js";
 import type { TypingMode } from "../../config/types.js";
@@ -9,6 +10,7 @@ import { withStateDirEnv } from "../../test-helpers/state-dir-env.js";
 import type { TemplateContext } from "../templating.js";
 import type { GetReplyOptions } from "../types.js";
 import type { FollowupRun, QueueSettings } from "./queue.js";
+import { enqueueFollowupRun } from "./queue.js";
 import { createMockTypingController } from "./test-helpers.js";
 
 type AgentRunParams = {
@@ -86,6 +88,9 @@ beforeAll(async () => {
 beforeEach(() => {
   state.runEmbeddedPiAgentMock.mockClear();
   state.runCliAgentMock.mockClear();
+  vi.mocked(enqueueFollowupRun).mockClear();
+  vi.mocked(queueEmbeddedPiMessage).mockReset();
+  vi.mocked(queueEmbeddedPiMessage).mockReturnValue(false);
   vi.stubEnv("OPENCLAW_TEST_FAST", "1");
 });
 
@@ -273,6 +278,185 @@ async function runReplyAgentWithBase(params: {
     typingMode: params.typingMode ?? "instant",
   });
 }
+
+describe("runReplyAgent busy queue acknowledgements", () => {
+  const createActiveRunPayload = (sessionKey = "main"): FollowupRun =>
+    ({
+      prompt: "please continue",
+      summaryLine: "please continue",
+      enqueuedAt: Date.now(),
+      run: {
+        sessionId: "session",
+        sessionKey,
+        messageProvider: "telegram",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp",
+        config: {},
+        skillsSnapshot: {},
+        provider: "anthropic",
+        model: "claude",
+        thinkLevel: "low",
+        verboseLevel: "off",
+        elevatedLevel: "off",
+        bashElevated: {
+          enabled: false,
+          allowed: false,
+          defaultLevel: "off",
+        },
+        timeoutMs: 1_000,
+        blockReplyBreak: "message_end",
+      },
+    }) as FollowupRun;
+
+  it("sends a throttled busy notice when followups are queued behind an active run", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-02-27T08:20:00.000Z"));
+    const runReplyAgent = await getRunReplyAgent();
+    const typing = createMockTypingController();
+    const sessionKey = "main";
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+    };
+    const sessionStore: Record<string, SessionEntry> = { [sessionKey]: sessionEntry };
+    const sessionCtx = {
+      Provider: "telegram",
+      MessageSid: "msg",
+      OriginatingTo: "chat",
+      AccountId: "primary",
+    } as unknown as TemplateContext;
+    const resolvedQueue = { mode: "collect" } as QueueSettings;
+
+    const first = await runReplyAgent({
+      commandBody: "first",
+      followupRun: createActiveRunPayload(sessionKey),
+      queueKey: sessionKey,
+      resolvedQueue,
+      shouldSteer: false,
+      shouldFollowup: true,
+      isActive: true,
+      isStreaming: false,
+      typing,
+      sessionEntry,
+      sessionStore,
+      sessionKey,
+      sessionCtx,
+      defaultModel: "anthropic/claude-opus-4-5",
+      resolvedVerboseLevel: "off",
+      isNewSession: false,
+      blockStreamingEnabled: false,
+      resolvedBlockStreamingBreak: "message_end",
+      shouldInjectGroupIntro: false,
+      typingMode: "instant",
+    });
+    expect(first).toMatchObject({
+      text: expect.stringContaining("Still working on your previous request"),
+    });
+    expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    const second = await runReplyAgent({
+      commandBody: "second",
+      followupRun: createActiveRunPayload(sessionKey),
+      queueKey: sessionKey,
+      resolvedQueue,
+      shouldSteer: false,
+      shouldFollowup: true,
+      isActive: true,
+      isStreaming: false,
+      typing,
+      sessionEntry,
+      sessionStore,
+      sessionKey,
+      sessionCtx,
+      defaultModel: "anthropic/claude-opus-4-5",
+      resolvedVerboseLevel: "off",
+      isNewSession: false,
+      blockStreamingEnabled: false,
+      resolvedBlockStreamingBreak: "message_end",
+      shouldInjectGroupIntro: false,
+      typingMode: "instant",
+    });
+    expect(second).toBeUndefined();
+    expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(31_000);
+    const third = await runReplyAgent({
+      commandBody: "third",
+      followupRun: createActiveRunPayload(sessionKey),
+      queueKey: sessionKey,
+      resolvedQueue,
+      shouldSteer: false,
+      shouldFollowup: true,
+      isActive: true,
+      isStreaming: false,
+      typing,
+      sessionEntry,
+      sessionStore,
+      sessionKey,
+      sessionCtx,
+      defaultModel: "anthropic/claude-opus-4-5",
+      resolvedVerboseLevel: "off",
+      isNewSession: false,
+      blockStreamingEnabled: false,
+      resolvedBlockStreamingBreak: "message_end",
+      shouldInjectGroupIntro: false,
+      typingMode: "instant",
+    });
+    expect(third).toMatchObject({
+      text: expect.stringContaining("queued this message"),
+    });
+    expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
+  });
+
+  it("sends busy notice when steering a streaming run without followup backlog", async () => {
+    const runReplyAgent = await getRunReplyAgent();
+    const typing = createMockTypingController();
+    const sessionKey = "main";
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+    };
+    const sessionStore: Record<string, SessionEntry> = { [sessionKey]: sessionEntry };
+    const sessionCtx = {
+      Provider: "telegram",
+      MessageSid: "msg",
+      OriginatingTo: "chat",
+      AccountId: "primary",
+    } as unknown as TemplateContext;
+    const resolvedQueue = { mode: "steer" } as QueueSettings;
+    vi.mocked(queueEmbeddedPiMessage).mockReturnValueOnce(true);
+
+    const result = await runReplyAgent({
+      commandBody: "status",
+      followupRun: createActiveRunPayload(sessionKey),
+      queueKey: sessionKey,
+      resolvedQueue,
+      shouldSteer: true,
+      shouldFollowup: false,
+      isActive: true,
+      isStreaming: true,
+      typing,
+      sessionEntry,
+      sessionStore,
+      sessionKey,
+      sessionCtx,
+      defaultModel: "anthropic/claude-opus-4-5",
+      resolvedVerboseLevel: "off",
+      isNewSession: false,
+      blockStreamingEnabled: false,
+      resolvedBlockStreamingBreak: "message_end",
+      shouldInjectGroupIntro: false,
+      typingMode: "instant",
+    });
+    expect(vi.mocked(queueEmbeddedPiMessage)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(enqueueFollowupRun)).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      text: expect.stringContaining("Still working on your previous request"),
+    });
+  });
+});
 
 describe("runReplyAgent typing (heartbeat)", () => {
   async function withTempStateDir<T>(fn: (stateDir: string) => Promise<T>): Promise<T> {
