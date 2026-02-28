@@ -341,6 +341,61 @@ describe("send", () => {
       expect(result).toBe("iMessage;-;test@example.com");
     });
 
+    it("normalizes any-service DM GUIDs to iMessage using participant metadata", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            data: [
+              {
+                guid: "any;-;kevin@wildenradt.org",
+                participants: [{ address: "kevin@wildenradt.org", service: "iMessage" }],
+              },
+            ],
+          }),
+      });
+
+      const target: BlueBubblesSendTarget = {
+        kind: "handle",
+        address: "kevin@wildenradt.org",
+        service: "auto",
+      };
+      const result = await resolveChatGuidForTarget({
+        baseUrl: "http://localhost:1234",
+        password: "test",
+        target,
+      });
+
+      expect(result).toBe("iMessage;-;kevin@wildenradt.org");
+    });
+
+    it("normalizes any-service chat_guid targets by resolving chat metadata", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            data: [
+              {
+                guid: "any;-;kevin@wildenradt.org",
+                participants: [{ address: "kevin@wildenradt.org", service: "iMessage" }],
+              },
+            ],
+          }),
+      });
+
+      const target: BlueBubblesSendTarget = {
+        kind: "chat_guid",
+        chatGuid: "any;-;kevin@wildenradt.org",
+      };
+      const result = await resolveChatGuidForTarget({
+        baseUrl: "http://localhost:1234",
+        password: "test",
+        target,
+      });
+
+      expect(result).toBe("iMessage;-;kevin@wildenradt.org");
+    });
+
     it("extracts guid from various response formats", async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -523,6 +578,22 @@ describe("send", () => {
       const body = JSON.parse(createCall[1].body);
       expect(body.addresses).toEqual(["+15550009999"]);
       expect(body.message).toBe("Hello new chat");
+    });
+
+    it("creates a new chat with explicit service when target service is provided", async () => {
+      mockNewChatSendResponse("new-msg-guid-service");
+
+      const result = await sendMessageBlueBubbles("imessage:+15550009999", "Hello service", {
+        serverUrl: "http://localhost:1234",
+        password: "test",
+      });
+
+      expect(result.messageId).toBe("new-msg-guid-service");
+      const createCall = mockFetch.mock.calls[1];
+      expect(createCall[0]).toContain("/api/v1/chat/new");
+      const body = JSON.parse(createCall[1].body);
+      expect(body.addresses).toEqual(["+15550009999"]);
+      expect(body.service).toBe("iMessage");
     });
 
     it("throws when creating a new chat requires Private API", async () => {

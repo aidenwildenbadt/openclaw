@@ -110,7 +110,7 @@ function resolvePrivateApiDecision(params: {
 
 type BlueBubblesChatRecord = Record<string, unknown>;
 
-function extractChatGuid(chat: BlueBubblesChatRecord): string | null {
+function extractRawChatGuid(chat: BlueBubblesChatRecord): string | null {
   const candidates = [
     chat.chatGuid,
     chat.guid,
@@ -125,6 +125,109 @@ function extractChatGuid(chat: BlueBubblesChatRecord): string | null {
     }
   }
   return null;
+}
+
+function normalizeBlueBubblesServiceName(value: unknown): "iMessage" | "SMS" | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!normalized || normalized === "any" || normalized === "auto") {
+    return null;
+  }
+  if (normalized === "imessage" || normalized === "i-message" || normalized === "i message") {
+    return "iMessage";
+  }
+  if (normalized === "sms" || normalized === "text" || normalized === "textmessage") {
+    return "SMS";
+  }
+  return null;
+}
+
+function resolveServiceFromChat(chat: BlueBubblesChatRecord): "iMessage" | "SMS" | null {
+  const directCandidates = [
+    chat.service,
+    chat.chatService,
+    chat.chat_service,
+    chat.accountService,
+    chat.account_service,
+  ];
+  for (const candidate of directCandidates) {
+    const normalized = normalizeBlueBubblesServiceName(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  const participants = Array.isArray(chat.participants) ? chat.participants : [];
+  for (const entry of participants) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const normalized = normalizeBlueBubblesServiceName((entry as Record<string, unknown>).service);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return null;
+}
+
+function normalizeBlueBubblesPreferredService(
+  targetService: "imessage" | "sms" | "auto" | undefined,
+): "iMessage" | "SMS" | null {
+  if (targetService === "imessage") {
+    return "iMessage";
+  }
+  if (targetService === "sms") {
+    return "SMS";
+  }
+  return null;
+}
+
+function normalizeAnyServiceChatGuid(params: {
+  chatGuid: string;
+  chat?: BlueBubblesChatRecord;
+  targetService?: "imessage" | "sms" | "auto";
+}): string {
+  const raw = params.chatGuid.trim();
+  if (!raw) {
+    return raw;
+  }
+  const parts = raw.split(";");
+  if (parts.length !== 3) {
+    return raw;
+  }
+  const service = parts[0]?.trim();
+  const separator = parts[1]?.trim();
+  const identifier = parts[2]?.trim();
+  if (!service || !separator || !identifier) {
+    return raw;
+  }
+  if (service.toLowerCase() !== "any") {
+    return `${service};${separator};${identifier}`;
+  }
+  const preferred =
+    normalizeBlueBubblesPreferredService(params.targetService) ||
+    (params.chat ? resolveServiceFromChat(params.chat) : null);
+  if (!preferred) {
+    return raw;
+  }
+  return `${preferred};${separator};${identifier}`;
+}
+
+function extractChatGuid(params: {
+  chat: BlueBubblesChatRecord;
+  targetService?: "imessage" | "sms" | "auto";
+}): string | null {
+  const raw = extractRawChatGuid(params.chat);
+  if (!raw) {
+    return null;
+  }
+  return normalizeAnyServiceChatGuid({
+    chatGuid: raw,
+    chat: params.chat,
+    targetService: params.targetService,
+  });
 }
 
 function extractChatId(chat: BlueBubblesChatRecord): number | null {
@@ -215,7 +318,31 @@ export async function resolveChatGuidForTarget(params: {
   target: BlueBubblesSendTarget;
 }): Promise<string | null> {
   if (params.target.kind === "chat_guid") {
-    return params.target.chatGuid;
+    const rawTargetGuid = params.target.chatGuid.trim();
+    if (!/^any;/i.test(rawTargetGuid)) {
+      return rawTargetGuid;
+    }
+
+    const limit = 500;
+    for (let offset = 0; offset < 5000; offset += limit) {
+      const chats = await queryChats({
+        baseUrl: params.baseUrl,
+        password: params.password,
+        timeoutMs: params.timeoutMs,
+        offset,
+        limit,
+      });
+      if (chats.length === 0) {
+        break;
+      }
+      for (const chat of chats) {
+        const raw = extractRawChatGuid(chat);
+        if (raw && raw === rawTargetGuid) {
+          return extractChatGuid({ chat }) ?? rawTargetGuid;
+        }
+      }
+    }
+    return rawTargetGuid;
   }
 
   const normalizedHandle =
@@ -241,11 +368,11 @@ export async function resolveChatGuidForTarget(params: {
       if (targetChatId != null) {
         const chatId = extractChatId(chat);
         if (chatId != null && chatId === targetChatId) {
-          return extractChatGuid(chat);
+          return extractChatGuid({ chat });
         }
       }
       if (targetChatIdentifier) {
-        const guid = extractChatGuid(chat);
+        const guid = extractChatGuid({ chat });
         if (guid) {
           // Back-compat: some callers might pass a full chat GUID.
           if (guid === targetChatIdentifier) {
@@ -269,11 +396,11 @@ export async function resolveChatGuidForTarget(params: {
                 ? chat.chat_identifier
                 : "";
         if (identifier && identifier === targetChatIdentifier) {
-          return guid ?? extractChatGuid(chat);
+          return guid ?? extractChatGuid({ chat });
         }
       }
       if (normalizedHandle) {
-        const guid = extractChatGuid(chat);
+        const guid = extractChatGuid({ chat, targetService: params.target.service });
         const directHandle = guid ? extractHandleFromChatGuid(guid) : null;
         if (directHandle && directHandle === normalizedHandle) {
           return guid;
@@ -307,6 +434,7 @@ async function createNewChatWithMessage(params: {
   password: string;
   address: string;
   message: string;
+  service?: "imessage" | "sms" | "auto";
   timeoutMs?: number;
 }): Promise<BlueBubblesSendResult> {
   const url = buildBlueBubblesApiUrl({
@@ -314,11 +442,15 @@ async function createNewChatWithMessage(params: {
     path: "/api/v1/chat/new",
     password: params.password,
   });
-  const payload = {
+  const requestedService = normalizeBlueBubblesPreferredService(params.service);
+  const payload: Record<string, unknown> = {
     addresses: [params.address],
     message: params.message,
     tempGuid: `temp-${crypto.randomUUID()}`,
   };
+  if (requestedService) {
+    payload.service = requestedService;
+  }
   const res = await blueBubblesFetchWithTimeout(
     url,
     {
@@ -404,6 +536,7 @@ export async function sendMessageBlueBubbles(
         password,
         address: target.address,
         message: strippedText,
+        service: target.service,
         timeoutMs: opts.timeoutMs,
       });
     }
