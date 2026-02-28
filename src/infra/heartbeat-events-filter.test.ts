@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildCronEventPrompt, buildExecEventPrompt } from "./heartbeat-events-filter.js";
+import {
+  buildCronEventPrompt,
+  buildExecEventPrompt,
+  isInternalCronInstructionEvent,
+  shouldRelayCronEventsToUser,
+} from "./heartbeat-events-filter.js";
 
 describe("heartbeat event prompts", () => {
   it("builds user-relay cron prompt by default", () => {
@@ -17,5 +22,22 @@ describe("heartbeat event prompts", () => {
     const prompt = buildExecEventPrompt({ deliverToUser: false });
     expect(prompt).toContain("Handle the result internally");
     expect(prompt).not.toContain("Please relay the command output to the user");
+  });
+
+  it("classifies runbook cron instructions as internal-only", () => {
+    expect(
+      isInternalCronInstructionEvent(
+        "Run exec command: /tmp/job --json. If command exits cleanly, reply NO_REPLY. If it errors, send Kevin a short alert.",
+      ),
+    ).toBe(true);
+  });
+
+  it("allows relaying plain reminders but blocks internal runbook instructions", () => {
+    expect(shouldRelayCronEventsToUser(["Reminder: Submit tax docs"])).toBe(true);
+    expect(
+      shouldRelayCronEventsToUser([
+        "Run exec command: /tmp/job --json. If command exits cleanly, reply NO_REPLY. If it errors, send Kevin a short alert.",
+      ]),
+    ).toBe(false);
   });
 });

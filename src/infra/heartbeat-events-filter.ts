@@ -87,6 +87,36 @@ export function isExecCompletionEvent(evt: string): boolean {
   return evt.toLowerCase().includes("exec finished");
 }
 
+// Guard against relaying runbook-style cron instructions (maintenance commands
+// with NO_REPLY/alert branching) back to users.
+export function isInternalCronInstructionEvent(evt: string): boolean {
+  const lower = evt.trim().toLowerCase();
+  if (!lower) {
+    return false;
+  }
+  const hasCommand =
+    lower.includes("run exec command:") ||
+    lower.includes("run node ") ||
+    lower.includes("please run in /") ||
+    lower.includes("please run this in /");
+  if (!hasCommand) {
+    return false;
+  }
+  const hasNoReplyContract = lower.includes("no_reply");
+  const hasExecutionBranching = lower.includes("if command exits");
+  const hasAlertBranching =
+    lower.includes("send kevin a short alert") || lower.includes("send a short alert");
+  return hasNoReplyContract || (hasExecutionBranching && hasAlertBranching);
+}
+
+export function shouldRelayCronEventsToUser(events: string[]): boolean {
+  const actionable = events.map((event) => event.trim()).filter(Boolean);
+  if (actionable.length === 0) {
+    return true;
+  }
+  return !actionable.some(isInternalCronInstructionEvent);
+}
+
 // Returns true when a system event should be treated as real cron reminder content.
 export function isCronSystemEvent(evt: string) {
   if (!evt.trim()) {

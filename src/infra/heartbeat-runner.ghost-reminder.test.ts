@@ -216,6 +216,29 @@ describe("Ghost reminder bug (issue #13317)", () => {
     expect(sendTelegram).not.toHaveBeenCalled();
   });
 
+  it("suppresses outbound delivery for internal-only cron runbook instructions", async () => {
+    const { result, sendTelegram, calledCtx } = await runHeartbeatCase({
+      tmpPrefix: "openclaw-cron-runbook-internal-",
+      replyText: "This should not be delivered",
+      reason: "cron:maintenance-job",
+      enqueue: (sessionKey) => {
+        enqueueSystemEvent(
+          "Run exec command: /Users/aiden/.openclaw/workspace/bin/openclaw-missed-inbound-recover --json. If command exits cleanly and attemptCount=0, reply NO_REPLY. If command exits cleanly and all attempts have result.ok=true, reply NO_REPLY. If command errors or any attempt fails, send Kevin a short alert with failing session/guid.",
+          {
+            sessionKey,
+            contextKey: "cron:maintenance-job",
+          },
+        );
+      },
+    });
+
+    expect(result.status).toBe("ran");
+    expect(calledCtx?.Provider).toBe("cron-event");
+    expect(calledCtx?.Body).toContain("Handle this reminder internally");
+    expect(calledCtx?.Body).not.toContain("Please relay this reminder to the user");
+    expect(sendTelegram).not.toHaveBeenCalled();
+  });
+
   it("uses an internal-only exec prompt when delivery target is none", async () => {
     const { result, sendTelegram, calledCtx } = await runHeartbeatCase({
       tmpPrefix: "openclaw-exec-internal-",

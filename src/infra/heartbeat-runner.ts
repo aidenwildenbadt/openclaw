@@ -48,6 +48,7 @@ import {
   buildCronEventPrompt,
   isCronSystemEvent,
   isExecCompletionEvent,
+  shouldRelayCronEventsToUser,
 } from "./heartbeat-events-filter.js";
 import { emitHeartbeatEvent, resolveIndicatorType } from "./heartbeat-events.js";
 import { resolveHeartbeatReasonKind } from "./heartbeat-reason.js";
@@ -558,6 +559,7 @@ type HeartbeatPromptResolution = {
   prompt: string;
   hasExecCompletion: boolean;
   hasCronEvents: boolean;
+  hasInternalOnlyCronEvents: boolean;
 };
 
 function appendHeartbeatWorkspacePathHint(prompt: string, workspaceDir: string): string {
@@ -592,14 +594,18 @@ function resolveHeartbeatRunPrompt(params: {
     .map((event) => event.text);
   const hasExecCompletion = pendingEvents.some(isExecCompletionEvent);
   const hasCronEvents = cronEvents.length > 0;
+  const relayCronEventsToUser = shouldRelayCronEventsToUser(cronEvents);
+  const hasInternalOnlyCronEvents = hasCronEvents && !relayCronEventsToUser;
   const basePrompt = hasExecCompletion
     ? buildExecEventPrompt({ deliverToUser: params.canRelayToUser })
     : hasCronEvents
-      ? buildCronEventPrompt(cronEvents, { deliverToUser: params.canRelayToUser })
+      ? buildCronEventPrompt(cronEvents, {
+          deliverToUser: params.canRelayToUser && relayCronEventsToUser,
+        })
       : resolveHeartbeatPrompt(params.cfg, params.heartbeat);
   const prompt = appendHeartbeatWorkspacePathHint(basePrompt, params.workspaceDir);
 
-  return { prompt, hasExecCompletion, hasCronEvents };
+  return { prompt, hasExecCompletion, hasCronEvents, hasInternalOnlyCronEvents };
 }
 
 export async function runHeartbeatOnce(opts: {
@@ -683,13 +689,14 @@ export async function runHeartbeatOnce(opts: {
     delivery.channel !== "none" && delivery.to && visibility.showAlerts,
   );
   const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
-  const { prompt, hasExecCompletion, hasCronEvents } = resolveHeartbeatRunPrompt({
-    cfg,
-    heartbeat,
-    preflight,
-    canRelayToUser,
-    workspaceDir,
-  });
+  const { prompt, hasExecCompletion, hasCronEvents, hasInternalOnlyCronEvents } =
+    resolveHeartbeatRunPrompt({
+      cfg,
+      heartbeat,
+      preflight,
+      canRelayToUser,
+      workspaceDir,
+    });
   const ctx = {
     Body: appendCronStyleCurrentTimeLine(prompt, cfg, startedAt),
     From: sender,
@@ -880,6 +887,24 @@ export async function runHeartbeatOnce(opts: {
           .filter((text): text is string => Boolean(text?.trim()))
           .join("\n")
       : normalized.text;
+
+    if (hasInternalOnlyCronEvents) {
+      await restoreHeartbeatUpdatedAt({
+        storePath,
+        sessionKey,
+        updatedAt: previousUpdatedAt,
+      });
+      emitHeartbeatEvent({
+        status: "skipped",
+        reason: "internal-only-cron-event",
+        preview: previewText?.slice(0, 200),
+        durationMs: Date.now() - startedAt,
+        hasMedia: mediaUrls.length > 0,
+        channel: delivery.channel !== "none" ? delivery.channel : undefined,
+        accountId: delivery.accountId,
+      });
+      return { status: "ran", durationMs: Date.now() - startedAt };
+    }
 
     if (delivery.channel === "none" || !delivery.to) {
       emitHeartbeatEvent({
