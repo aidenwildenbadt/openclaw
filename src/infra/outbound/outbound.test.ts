@@ -203,6 +203,51 @@ describe("delivery-queue", () => {
       const persisted = JSON.parse(fs.readFileSync(filePath, "utf-8"));
       expect(persisted.lastAttemptAt).toBe(persisted.enqueuedAt);
     });
+
+    it("ignores non-replayable legacy tombstones", async () => {
+      const queueDir = path.join(tmpDir, "delivery-queue");
+      fs.mkdirSync(queueDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(queueDir, "legacy-tombstone.json"),
+        JSON.stringify({
+          id: "legacy-tombstone",
+          channel: "bluebubbles",
+          lastError: "Message Send Error",
+        }),
+        "utf-8",
+      );
+
+      const entries = await loadPendingDeliveries(tmpDir);
+      expect(entries).toEqual([]);
+    });
+
+    it("hydrates legacy entries with target/attempt/payload fields", async () => {
+      const queueDir = path.join(tmpDir, "delivery-queue");
+      fs.mkdirSync(queueDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(queueDir, "legacy-replayable.json"),
+        JSON.stringify({
+          id: "legacy-replayable",
+          channel: "bluebubbles",
+          target: "+15551230000",
+          payload: { text: "legacy payload" },
+          attempt: 2,
+          createdAt: "2026-02-28T00:00:00.000Z",
+        }),
+        "utf-8",
+      );
+
+      const entries = await loadPendingDeliveries(tmpDir);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        id: "legacy-replayable",
+        channel: "bluebubbles",
+        to: "+15551230000",
+        retryCount: 2,
+        payloads: [{ text: "legacy payload" }],
+      });
+      expect(entries[0].enqueuedAt).toBeGreaterThan(0);
+    });
   });
 
   describe("computeBackoffMs", () => {
@@ -544,6 +589,32 @@ describe("delivery-queue", () => {
       expect(remaining).toHaveLength(0);
 
       vi.useRealTimers();
+    });
+
+    it("still recovers valid entries when malformed tombstones are present", async () => {
+      const queueDir = path.join(tmpDir, "delivery-queue");
+      fs.mkdirSync(queueDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(queueDir, "stale.json"),
+        JSON.stringify({
+          id: "stale",
+          channel: "telegram",
+          lastError: "token missing",
+        }),
+        "utf-8",
+      );
+      await enqueueDelivery({ channel: "telegram", to: "123", payloads: [{ text: "hi" }] }, tmpDir);
+
+      const deliver = vi.fn().mockResolvedValue([]);
+      const { result } = await runRecovery({ deliver });
+
+      expect(deliver).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        recovered: 1,
+        failed: 0,
+        skippedMaxRetries: 0,
+        deferredBackoff: 0,
+      });
     });
 
     it("returns zeros when queue is empty", async () => {

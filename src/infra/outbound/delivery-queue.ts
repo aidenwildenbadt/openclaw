@@ -51,6 +51,13 @@ export interface QueuedDelivery extends QueuedDeliveryPayload {
   lastError?: string;
 }
 
+type LegacyQueuedDelivery = Partial<QueuedDelivery> & {
+  target?: unknown;
+  attempt?: unknown;
+  payload?: unknown;
+  createdAt?: unknown;
+};
+
 export type RecoverySummary = {
   recovered: number;
   failed: number;
@@ -168,7 +175,10 @@ export async function loadPendingDeliveries(stateDir?: string): Promise<QueuedDe
         continue;
       }
       const raw = await fs.promises.readFile(filePath, "utf-8");
-      const parsed = JSON.parse(raw) as QueuedDelivery;
+      const parsed = normalizeQueuedDelivery(JSON.parse(raw), file.slice(0, -".json".length));
+      if (!parsed) {
+        continue;
+      }
       const { entry, migrated } = normalizeLegacyQueuedDeliveryEntry(parsed);
       if (migrated) {
         const tmp = `${filePath}.${process.pid}.tmp`;
@@ -184,6 +194,103 @@ export async function loadPendingDeliveries(stateDir?: string): Promise<QueuedDe
     }
   }
   return entries;
+}
+
+function asTrimmedString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function asEpochMs(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function asRetryCount(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return Math.floor(value);
+  }
+  return 0;
+}
+
+function asBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function asReplyPayloads(value: unknown): ReplyPayload[] {
+  if (Array.isArray(value)) {
+    return value.filter(
+      (payload): payload is ReplyPayload => !!payload && typeof payload === "object",
+    );
+  }
+  return [];
+}
+
+function normalizeQueuedDelivery(raw: unknown, fallbackId: string): QueuedDelivery | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const record = raw as LegacyQueuedDelivery;
+
+  const id = asTrimmedString(record.id) ?? fallbackId;
+  const channel = asTrimmedString(record.channel);
+  const to = asTrimmedString(record.to) ?? asTrimmedString(record.target);
+  const payloads =
+    asReplyPayloads(record.payloads).length > 0
+      ? asReplyPayloads(record.payloads)
+      : record.payload && typeof record.payload === "object"
+        ? ([record.payload] as ReplyPayload[])
+        : [];
+
+  // Ignore non-replayable tombstones/legacy entries that cannot be retried.
+  if (!channel || channel === "none" || !to || payloads.length === 0) {
+    return null;
+  }
+
+  const mirrorRecord =
+    record.mirror && typeof record.mirror === "object"
+      ? (record.mirror as Partial<DeliveryMirrorPayload>)
+      : null;
+  const mirrorSessionKey = asTrimmedString(mirrorRecord?.sessionKey);
+  const mirror =
+    mirrorSessionKey !== null
+      ? {
+          sessionKey: mirrorSessionKey,
+          agentId: asTrimmedString(mirrorRecord?.agentId) ?? undefined,
+          text: typeof mirrorRecord?.text === "string" ? mirrorRecord.text : undefined,
+          mediaUrls: Array.isArray(mirrorRecord?.mediaUrls)
+            ? mirrorRecord.mediaUrls.filter((url): url is string => typeof url === "string")
+            : undefined,
+        }
+      : undefined;
+
+  return {
+    id,
+    enqueuedAt: asEpochMs(record.enqueuedAt) ?? asEpochMs(record.createdAt) ?? Date.now(),
+    channel: channel as Exclude<OutboundChannel, "none">,
+    to,
+    accountId: asTrimmedString(record.accountId) ?? undefined,
+    payloads,
+    threadId:
+      typeof record.threadId === "string" || typeof record.threadId === "number"
+        ? record.threadId
+        : undefined,
+    replyToId: asTrimmedString(record.replyToId) ?? undefined,
+    bestEffort: asBoolean(record.bestEffort),
+    gifPlayback: asBoolean(record.gifPlayback),
+    silent: asBoolean(record.silent),
+    mirror,
+    retryCount: asRetryCount(record.retryCount ?? record.attempt),
+    lastAttemptAt: asEpochMs(record.lastAttemptAt) ?? undefined,
+    lastError: typeof record.lastError === "string" ? record.lastError : undefined,
+  };
 }
 
 /** Move a queue entry to the failed/ subdirectory. */
