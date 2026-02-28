@@ -877,6 +877,61 @@ describe("runHeartbeatOnce", () => {
     }
   });
 
+  it("suppresses duplicate stuck alerts when only idle hours changed", async () => {
+    const tmpDir = await createCaseDir("hb-dup-stuck-hours");
+    const storePath = path.join(tmpDir, "sessions.json");
+    const replySpy = vi.spyOn(replyModule, "getReplyFromConfig");
+    try {
+      const cfg: OpenClawConfig = {
+        agents: {
+          defaults: {
+            workspace: tmpDir,
+            heartbeat: { every: "5m", target: "whatsapp" },
+          },
+        },
+        channels: { whatsapp: { allowFrom: ["*"] } },
+        session: { store: storePath },
+      };
+      const sessionKey = resolveMainSessionKey(cfg);
+
+      await fs.writeFile(
+        storePath,
+        JSON.stringify({
+          [sessionKey]: {
+            sessionId: "sid",
+            updatedAt: Date.now(),
+            lastChannel: "whatsapp",
+            lastTo: "120363401234567890@g.us",
+            lastHeartbeatText:
+              "Attention needed: one project is still flagged as stuck (no logged progress for ~10.4 hours).\n" +
+              "Smallest next action: add one concrete next step in today’s Open Loops and execute it.",
+            lastHeartbeatSentAt: 10_000,
+          },
+        }),
+      );
+
+      replySpy.mockResolvedValue([
+        {
+          text:
+            "Attention needed: one project is still flagged as stuck (no logged progress for ~10.7 hours).\n" +
+            "Smallest next action: add one concrete next step in today’s Open Loops and execute it.",
+        },
+      ]);
+      const sendWhatsApp = vi
+        .fn<NonNullable<HeartbeatDeps["sendWhatsApp"]>>()
+        .mockResolvedValue({ messageId: "m1", toJid: "jid" });
+
+      await runHeartbeatOnce({
+        cfg,
+        deps: createHeartbeatDeps(sendWhatsApp, 60_000),
+      });
+
+      expect(sendWhatsApp).toHaveBeenCalledTimes(0);
+    } finally {
+      replySpy.mockRestore();
+    }
+  });
+
   it("handles reasoning payload delivery variants", async () => {
     const replySpy = vi.spyOn(replyModule, "getReplyFromConfig");
     try {

@@ -470,6 +470,16 @@ function normalizeHeartbeatReply(
   return { shouldSkip: false, text: finalText, hasMedia };
 }
 
+const STUCK_IDLE_HOURS_RE = /(no logged progress for\s*~)\d+(?:\.\d+)?(\s+hours)/giu;
+
+function normalizeHeartbeatTextForDedupe(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "";
+  }
+  return trimmed.replace(STUCK_IDLE_HOURS_RE, "$1<hours>$2");
+}
+
 type HeartbeatReasonFlags = {
   isExecEventReason: boolean;
   isCronEventReason: boolean;
@@ -850,13 +860,15 @@ export async function runHeartbeatOnce(opts: {
     // This prevents "nagging" when nothing changed but the model repeats the same items.
     const prevHeartbeatText =
       typeof entry?.lastHeartbeatText === "string" ? entry.lastHeartbeatText : "";
+    const prevHeartbeatDedupeText = normalizeHeartbeatTextForDedupe(prevHeartbeatText);
+    const currentHeartbeatDedupeText = normalizeHeartbeatTextForDedupe(normalized.text);
     const prevHeartbeatAt =
       typeof entry?.lastHeartbeatSentAt === "number" ? entry.lastHeartbeatSentAt : undefined;
     const isDuplicateMain =
       !shouldSkipMain &&
       !mediaUrls.length &&
-      Boolean(prevHeartbeatText.trim()) &&
-      normalized.text.trim() === prevHeartbeatText.trim() &&
+      Boolean(prevHeartbeatDedupeText) &&
+      currentHeartbeatDedupeText === prevHeartbeatDedupeText &&
       typeof prevHeartbeatAt === "number" &&
       startedAt - prevHeartbeatAt < 24 * 60 * 60 * 1000;
 
