@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import {
@@ -180,7 +182,110 @@ function readTrimmedTargetsParam(params: Record<string, unknown>): string[] {
   return targets;
 }
 
+function normalizeRoutingHandle(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const lower = trimmed.toLowerCase();
+  if (lower.includes("@")) {
+    return lower;
+  }
+  const digits = lower.replace(/\D/g, "");
+  if (!digits) {
+    return lower;
+  }
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return `+${digits}`;
+  }
+  return digits.length >= 10 ? `+${digits}` : digits;
+}
+
+function resolveKnownGroupTargetFromRoutingMap(params: {
+  cfg: OpenClawConfig;
+  channelHint?: string;
+  targets: string[];
+}): { channel: string; target: string } | undefined {
+  const workspace = params.cfg.agents?.defaults?.workspace?.trim();
+  if (!workspace) {
+    return undefined;
+  }
+  const routingTargetsPath = path.join(workspace, "memory", "routing-targets.json");
+  if (!fs.existsSync(routingTargetsPath)) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(routingTargetsPath, "utf8"));
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object") {
+    return undefined;
+  }
+  const groups = (parsed as { groups?: unknown }).groups;
+  if (!groups || typeof groups !== "object") {
+    return undefined;
+  }
+  const requested = new Set(
+    params.targets.map(normalizeRoutingHandle).filter((value) => value.length > 0),
+  );
+  if (requested.size < 2) {
+    return undefined;
+  }
+  for (const group of Object.values(groups as Record<string, unknown>)) {
+    if (!group || typeof group !== "object") {
+      continue;
+    }
+    const record = group as {
+      member_handles?: unknown;
+      channels?: unknown;
+      chat_guid?: unknown;
+    };
+    const memberHandlesRaw = Array.isArray(record.member_handles)
+      ? record.member_handles
+      : Array.isArray((group as { members?: unknown }).members)
+        ? ((group as { members?: unknown }).members as unknown[])
+        : [];
+    const memberHandles = new Set(
+      memberHandlesRaw
+        .filter((value): value is string => typeof value === "string")
+        .map(normalizeRoutingHandle)
+        .filter((value) => value.length > 0),
+    );
+    if (memberHandles.size === 0) {
+      continue;
+    }
+    const matchesAllTargets = Array.from(requested).every((handle) => memberHandles.has(handle));
+    if (!matchesAllTargets) {
+      continue;
+    }
+    const channels =
+      record.channels && typeof record.channels === "object"
+        ? (record.channels as Record<string, unknown>)
+        : {};
+    const channelHint = params.channelHint?.trim().toLowerCase();
+    const hintedTarget =
+      channelHint && typeof channels[channelHint] === "string" ? channels[channelHint].trim() : "";
+    if (hintedTarget) {
+      return { channel: channelHint!, target: hintedTarget };
+    }
+    const bluebubblesTarget =
+      typeof channels.bluebubbles === "string" ? channels.bluebubbles.trim() : "";
+    if (bluebubblesTarget) {
+      return { channel: "bluebubbles", target: bluebubblesTarget };
+    }
+    const chatGuid = typeof record.chat_guid === "string" ? record.chat_guid.trim() : "";
+    if (chatGuid) {
+      const target = chatGuid.startsWith("chat_guid:") ? chatGuid : `chat_guid:${chatGuid}`;
+      return { channel: "bluebubbles", target };
+    }
+  }
+  return undefined;
+}
+
 function normalizeTargetsParamForAction(params: {
+  cfg: OpenClawConfig;
   action: ChannelMessageActionName;
   args: Record<string, unknown>;
 }) {
@@ -202,6 +307,23 @@ function normalizeTargetsParamForAction(params: {
     typeof params.args.channelId === "string" ? params.args.channelId.trim() : "";
   const primaryTarget = explicitTarget || legacyTo || legacyChannelId;
   if (targets.length > 1) {
+    const channelHint =
+      typeof params.args.channel === "string"
+        ? (normalizeMessageChannel(params.args.channel) ?? params.args.channel.trim().toLowerCase())
+        : undefined;
+    const mappedGroup = resolveKnownGroupTargetFromRoutingMap({
+      cfg: params.cfg,
+      channelHint,
+      targets,
+    });
+    if (mappedGroup) {
+      params.args.channel = mappedGroup.channel;
+      params.args.target = mappedGroup.target;
+      delete params.args.to;
+      delete params.args.channelId;
+      delete params.args.targets;
+      return;
+    }
     throw new Error(
       `Action ${params.action} accepts a single destination. Use target for one recipient or broadcast for multiple targets.`,
     );
@@ -762,7 +884,7 @@ export async function runMessageAction(
   parseComponentsParam(params);
 
   const action = input.action;
-  normalizeTargetsParamForAction({ action, args: params });
+  normalizeTargetsParamForAction({ cfg, action, args: params });
   if (action === "broadcast") {
     return handleBroadcastAction(input, params);
   }

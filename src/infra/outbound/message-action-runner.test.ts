@@ -223,6 +223,52 @@ describe("runMessageAction context isolation", () => {
     ).rejects.toThrow(/single destination/i);
   });
 
+  it("maps multi-target send to known group target from routing-targets.json", async () => {
+    await withSandbox(async (workspaceDir) => {
+      await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });
+      await fs.writeFile(
+        path.join(workspaceDir, "memory", "routing-targets.json"),
+        JSON.stringify({
+          groups: {
+            kevin_fernanda: {
+              member_handles: ["+14155592088", "+14255320947"],
+              channels: {
+                imessage: "chat_id:3",
+              },
+            },
+          },
+        }),
+      );
+
+      const cfg = {
+        channels: {
+          imessage: { enabled: true },
+        },
+        agents: {
+          defaults: {
+            workspace: workspaceDir,
+          },
+        },
+      } as OpenClawConfig;
+
+      const result = await runDrySend({
+        cfg,
+        actionParams: {
+          channel: "imessage",
+          targets: ["+14155592088", "+14255320947"],
+          message: "hi",
+        },
+      });
+
+      expect(result.kind).toBe("send");
+      if (result.kind !== "send") {
+        throw new Error("expected send result");
+      }
+      expect(result.channel).toBe("imessage");
+      expect(result.to).toBe("chat_id:3");
+    });
+  });
+
   it("defaults to current channel when target is omitted", async () => {
     const result = await runDrySend({
       cfg: slackConfig,
