@@ -25,7 +25,7 @@ import {
   listAgentEntries,
   pruneAgentConfig,
 } from "../../commands/agents.config.js";
-import { loadConfig, writeConfigFile } from "../../config/config.js";
+import { clearConfigCache, loadConfig, writeConfigFile } from "../../config/config.js";
 import { resolveSessionTranscriptsDirForAgent } from "../../config/sessions/paths.js";
 import { sameFileIdentity } from "../../infra/file-identity.js";
 import { SafeOpenError, readLocalFileSafely, writeFileWithinRoot } from "../../infra/fs-safe.js";
@@ -64,6 +64,63 @@ const BOOTSTRAP_FILE_NAMES_POST_ONBOARDING = BOOTSTRAP_FILE_NAMES.filter(
 const MEMORY_FILE_NAMES = [DEFAULT_MEMORY_FILENAME, DEFAULT_MEMORY_ALT_FILENAME] as const;
 
 const ALLOWED_FILE_NAMES = new Set<string>([...BOOTSTRAP_FILE_NAMES, ...MEMORY_FILE_NAMES]);
+
+const DEFAULT_AGENT_CREATE_READY_TIMEOUT_MS = 3000;
+const DEFAULT_AGENT_CREATE_READY_POLL_MS = 25;
+
+function resolvePositiveIntFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function resolveAgentCreateReadyTimeoutMs(): number {
+  return resolvePositiveIntFromEnv(
+    "OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS",
+    DEFAULT_AGENT_CREATE_READY_TIMEOUT_MS,
+  );
+}
+
+function resolveAgentCreateReadyPollMs(): number {
+  return resolvePositiveIntFromEnv(
+    "OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS",
+    DEFAULT_AGENT_CREATE_READY_POLL_MS,
+  );
+}
+
+function delayMs(durationMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, durationMs);
+  });
+}
+
+async function waitForAgentReady(agentId: string): Promise<{ ok: true } | { ok: false }> {
+  const timeoutMs = resolveAgentCreateReadyTimeoutMs();
+  const pollMs = resolveAgentCreateReadyPollMs();
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    clearConfigCache();
+    const cfg = loadConfig();
+    const foundInEntries = findAgentEntryIndex(listAgentEntries(cfg), agentId) >= 0;
+    const resolvableForFiles = resolveAgentIdOrError(agentId, cfg) === agentId;
+    if (foundInEntries && resolvableForFiles) {
+      return { ok: true };
+    }
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      return { ok: false };
+    }
+    await delayMs(Math.min(pollMs, remainingMs));
+  }
+}
 
 function resolveAgentWorkspaceFileOrRespondError(
   params: Record<string, unknown>,
@@ -431,6 +488,19 @@ export const agentsHandlers: GatewayRequestHandlers = {
       "",
     ];
     await fs.appendFile(identityPath, lines.join("\n"), "utf-8");
+
+    const ready = await waitForAgentReady(agentId);
+    if (!ready.ok) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INTERNAL_ERROR,
+          `agent "${agentId}" created but not yet resolvable after ${resolveAgentCreateReadyTimeoutMs()}ms`,
+        ),
+      );
+      return;
+    }
 
     respond(true, { ok: true, agentId, name: rawName, workspace: workspaceDir }, undefined);
   },

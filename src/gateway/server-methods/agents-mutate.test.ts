@@ -12,7 +12,22 @@ const mocks = vi.hoisted(() => ({
   applyAgentConfig: vi.fn((_cfg: unknown, _opts: unknown) => ({})),
   pruneAgentConfig: vi.fn(() => ({ config: {}, removedBindings: 0 })),
   writeConfigFile: vi.fn(async () => {}),
+  clearConfigCache: vi.fn(() => {}),
   ensureAgentWorkspace: vi.fn(async () => {}),
+  listAgentIds: vi.fn((cfg?: { agents?: { list?: Array<{ id?: string; agentId?: string }> } }) => {
+    const ids = (cfg?.agents?.list ?? [])
+      .map((entry) => {
+        if (typeof entry?.id === "string" && entry.id.trim()) {
+          return entry.id.trim();
+        }
+        if (typeof entry?.agentId === "string" && entry.agentId.trim()) {
+          return entry.agentId.trim();
+        }
+        return "";
+      })
+      .filter((id): id is string => Boolean(id));
+    return ["main", ...ids];
+  }),
   resolveAgentDir: vi.fn(() => "/agents/test-agent"),
   resolveAgentWorkspaceDir: vi.fn(() => "/workspace/test-agent"),
   resolveSessionTranscriptsDirForAgent: vi.fn(() => "/transcripts/test-agent"),
@@ -36,6 +51,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../../config/config.js", () => ({
   loadConfig: () => mocks.loadConfigReturn,
   writeConfigFile: mocks.writeConfigFile,
+  clearConfigCache: mocks.clearConfigCache,
 }));
 
 vi.mock("../../commands/agents.config.js", () => ({
@@ -46,7 +62,7 @@ vi.mock("../../commands/agents.config.js", () => ({
 }));
 
 vi.mock("../../agents/agent-scope.js", () => ({
-  listAgentIds: () => ["main"],
+  listAgentIds: mocks.listAgentIds,
   resolveAgentDir: mocks.resolveAgentDir,
   resolveAgentWorkspaceDir: mocks.resolveAgentWorkspaceDir,
 }));
@@ -202,6 +218,9 @@ function expectNotFoundResponseAndNoWrite(respond: ReturnType<typeof vi.fn>) {
 }
 
 beforeEach(() => {
+  delete process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS;
+  delete process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS;
+
   mocks.fsReadFile.mockImplementation(async () => {
     throw createEnoentError();
   });
@@ -231,8 +250,23 @@ describe("agents.create", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.loadConfigReturn = {};
-    mocks.findAgentEntryIndex.mockReturnValue(-1);
-    mocks.applyAgentConfig.mockImplementation((_cfg, _opts) => ({}));
+    mocks.listAgentEntries.mockImplementation(
+      (cfg: { agents?: { list?: Array<{ id?: string; agentId?: string }> } }) =>
+        (cfg.agents?.list ?? []).map((entry) => ({
+          agentId: entry.id ?? entry.agentId ?? "",
+        })),
+    );
+    mocks.findAgentEntryIndex.mockImplementation(
+      (entries: Array<{ agentId: string }>, id: string) =>
+        entries.findIndex((entry) => entry.agentId === id),
+    );
+    mocks.applyAgentConfig.mockImplementation((cfg, opts: { agentId?: string }) => ({
+      ...(cfg as Record<string, unknown>),
+      agents: { list: [{ id: opts.agentId ?? "" }] },
+    }));
+    mocks.writeConfigFile.mockImplementation(async (cfg) => {
+      mocks.loadConfigReturn = cfg as Record<string, unknown>;
+    });
   });
 
   it("creates a new agent successfully", async () => {
@@ -346,6 +380,97 @@ describe("agents.create", () => {
       expect.stringContaining("IDENTITY.md"),
       expect.stringMatching(/- Name: Fancy Agent[\s\S]*- Emoji: 🤖[\s\S]*- Avatar:/),
       "utf-8",
+    );
+  });
+
+  it("waits for config propagation before acknowledging create success", async () => {
+    mocks.loadConfigReturn = {};
+    mocks.applyAgentConfig.mockImplementation((cfg, opts: { agentId?: string }) => ({
+      ...(cfg as Record<string, unknown>),
+      agents: { list: [{ id: opts.agentId ?? "" }] },
+    }));
+    mocks.writeConfigFile.mockImplementation(async (cfg) => {
+      setTimeout(() => {
+        mocks.loadConfigReturn = cfg as Record<string, unknown>;
+      }, 30);
+    });
+
+    const { respond, promise } = makeCall("agents.create", {
+      name: "Race Safe",
+      workspace: "/tmp/ws",
+    });
+    await promise;
+
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({ ok: true, agentId: "race-safe" }),
+      undefined,
+    );
+    expect(mocks.clearConfigCache).toHaveBeenCalled();
+  });
+
+  it("returns a clear timeout error when create readiness does not converge", async () => {
+    process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS = "15";
+    process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS = "5";
+    mocks.loadConfigReturn = {};
+    mocks.applyAgentConfig.mockImplementation((cfg) => cfg);
+
+    const { respond, promise } = makeCall("agents.create", {
+      name: "Never Ready",
+      workspace: "/tmp/ws",
+    });
+    await promise;
+
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        message: expect.stringContaining("created but not yet resolvable"),
+      }),
+    );
+  });
+
+  it("guarantees immediate create→files.list and create→update compatibility", async () => {
+    mocks.loadConfigReturn = {};
+    mocks.listAgentEntries.mockImplementation(
+      (cfg: { agents?: { list?: Array<{ id?: string }> } }) =>
+        (cfg.agents?.list ?? []).map((entry) => ({ agentId: entry.id ?? "" })),
+    );
+    mocks.findAgentEntryIndex.mockImplementation(
+      (entries: Array<{ agentId: string }>, id: string) =>
+        entries.findIndex((entry) => entry.agentId === id),
+    );
+    mocks.applyAgentConfig.mockImplementation((cfg, opts: { agentId?: string }) => ({
+      ...(cfg as Record<string, unknown>),
+      agents: { list: [{ id: opts.agentId ?? "" }] },
+    }));
+    mocks.writeConfigFile.mockImplementation(async (cfg) => {
+      setTimeout(() => {
+        mocks.loadConfigReturn = cfg as Record<string, unknown>;
+      }, 20);
+    });
+
+    const create = makeCall("agents.create", {
+      name: "Board Agent",
+      workspace: "/tmp/ws",
+    });
+    await create.promise;
+
+    const list = makeCall("agents.files.list", { agentId: "board-agent" });
+    await list.promise;
+
+    const update = makeCall("agents.update", { agentId: "board-agent", name: "Board Agent v2" });
+    await update.promise;
+
+    expect(list.respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({ agentId: "board-agent" }),
+      undefined,
+    );
+    expect(update.respond).toHaveBeenCalledWith(
+      true,
+      { ok: true, agentId: "board-agent" },
+      undefined,
     );
   });
 });
