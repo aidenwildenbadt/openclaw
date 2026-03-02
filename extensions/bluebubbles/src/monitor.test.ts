@@ -10,6 +10,7 @@ import {
   registerBlueBubblesWebhookTarget,
   resolveBlueBubblesMessageId,
   _resetBlueBubblesShortIdState,
+  _resetBlueBubblesWebhookReplayState,
 } from "./monitor.js";
 import { setBlueBubblesRuntime } from "./runtime.js";
 
@@ -380,8 +381,9 @@ describe("BlueBubbles webhook monitor", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // Reset short ID state between tests for predictable behavior
+    // Reset short ID/replay state between tests for predictable behavior
     _resetBlueBubblesShortIdState();
+    _resetBlueBubblesWebhookReplayState();
     mockFetchBlueBubblesHistory.mockResolvedValue({ entries: [], resolved: true });
     mockReadAllowFromStore.mockResolvedValue([]);
     mockUpsertPairingRequest.mockResolvedValue({ code: "TESTCODE", created: true });
@@ -1907,6 +1909,104 @@ describe("BlueBubbles webhook monitor", () => {
         const callArgs = getFirstDispatchCall();
         expect(callArgs.ctx.MediaPaths).toEqual(["/tmp/test-media.jpg"]);
         expect(callArgs.ctx.Body).toContain("hello");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("processes new-message once when an equivalent updated-message replay arrives", async () => {
+      const account = createMockAccount({ dmPolicy: "open" });
+      const config: OpenClawConfig = {};
+      const core = createMockRuntime();
+      setBlueBubblesRuntime(core);
+
+      unregister = registerBlueBubblesWebhookTarget({
+        account,
+        config,
+        runtime: { log: vi.fn(), error: vi.fn() },
+        core,
+        path: "/bluebubbles-webhook",
+      });
+
+      const messageId = "dup-msg-1";
+      const sender = "+15551234567";
+      const text = "Retry post";
+
+      await handleBlueBubblesWebhookRequest(
+        createMockRequest("POST", "/bluebubbles-webhook", {
+          type: "new-message",
+          data: {
+            text,
+            handle: { address: sender },
+            isGroup: false,
+            isFromMe: false,
+            guid: messageId,
+            chatGuid: "iMessage;-;+15551234567",
+            date: Date.now(),
+          },
+        }),
+        createMockResponse(),
+      );
+
+      await handleBlueBubblesWebhookRequest(
+        createMockRequest("POST", "/bluebubbles-webhook", {
+          type: "updated-message",
+          data: {
+            text,
+            handle: { address: sender },
+            isGroup: false,
+            isFromMe: false,
+            guid: messageId,
+            chatGuid: "iMessage;-;+15551234567",
+            date: Date.now(),
+          },
+        }),
+        createMockResponse(),
+      );
+
+      await flushAsync();
+      expect(mockDispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    });
+
+    it("still processes updated-message edits when dateEdited is present", async () => {
+      vi.useFakeTimers();
+      try {
+        const account = createMockAccount({ dmPolicy: "open" });
+        const config: OpenClawConfig = {};
+        const core = createMockRuntime();
+        setBlueBubblesRuntime(core);
+
+        unregister = registerBlueBubblesWebhookTarget({
+          account,
+          config,
+          runtime: { log: vi.fn(), error: vi.fn() },
+          core,
+          path: "/bluebubbles-webhook",
+        });
+
+        await handleBlueBubblesWebhookRequest(
+          createMockRequest("POST", "/bluebubbles-webhook", {
+            type: "updated-message",
+            data: {
+              text: "edited body",
+              handle: { address: "+15551234567" },
+              isGroup: false,
+              isFromMe: false,
+              guid: "edited-msg-1",
+              chatGuid: "iMessage;-;+15551234567",
+              itemType: 0,
+              dateEdited: Date.now(),
+              date: Date.now(),
+            },
+          }),
+          createMockResponse(),
+        );
+
+        await vi.advanceTimersByTimeAsync(600);
+        await Promise.resolve();
+        expect(mockDispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+        const callArgs = getFirstDispatchCall();
+        expect(callArgs.ctx.Body).toContain("edited body");
       } finally {
         vi.useRealTimers();
       }

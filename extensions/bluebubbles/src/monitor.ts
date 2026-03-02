@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   beginWebhookRequestPipelineOrReject,
+  createDedupeCache,
   createWebhookInFlightLimiter,
   registerWebhookTargetWithPluginRoute,
   readWebhookBodyOrReject,
@@ -9,7 +10,11 @@ import {
   resolveWebhookTargets,
 } from "openclaw/plugin-sdk";
 import { createBlueBubblesDebounceRegistry } from "./monitor-debounce.js";
-import { normalizeWebhookMessage, normalizeWebhookReaction } from "./monitor-normalize.js";
+import {
+  normalizeWebhookMessage,
+  normalizeWebhookReaction,
+  type NormalizedWebhookMessage,
+} from "./monitor-normalize.js";
 import { logVerbose, processMessage, processReaction } from "./monitor-processing.js";
 import {
   _resetBlueBubblesShortIdState,
@@ -28,6 +33,12 @@ import { getBlueBubblesRuntime } from "./runtime.js";
 const webhookTargets = new Map<string, WebhookTarget[]>();
 const webhookInFlightLimiter = createWebhookInFlightLimiter();
 const debounceRegistry = createBlueBubblesDebounceRegistry({ processMessage });
+const BLUEBUBBLES_WEBHOOK_REPLAY_WINDOW_MS = 5 * 60_000;
+const BLUEBUBBLES_WEBHOOK_REPLAY_CACHE_MAX_SIZE = 10_000;
+const recentInboundWebhookEvents = createDedupeCache({
+  ttlMs: BLUEBUBBLES_WEBHOOK_REPLAY_WINDOW_MS,
+  maxSize: BLUEBUBBLES_WEBHOOK_REPLAY_CACHE_MAX_SIZE,
+});
 
 export function registerBlueBubblesWebhookTarget(target: WebhookTarget): () => void {
   const registered = registerWebhookTargetWithPluginRoute({
@@ -118,6 +129,91 @@ function safeEqualSecret(aRaw: string, bRaw: string): boolean {
   return timingSafeEqual(bufA, bufB);
 }
 
+function looksLikeBlueBubblesGuid(value: string): boolean {
+  return /^[A-Za-z0-9-]{8,128}$/.test(value);
+}
+
+function shouldIgnoreUpdatedNonConversationalEvent(
+  eventType: string,
+  message: NormalizedWebhookMessage,
+): boolean {
+  if (eventType !== "updated-message") {
+    return false;
+  }
+  const text = message.text.trim();
+
+  // Non-conversational payload churn can contain GUID-like text.
+  if (text && looksLikeBlueBubblesGuid(text)) {
+    return true;
+  }
+
+  // In some webhook variants, explicit edit metadata is not normalized but edited text is present.
+  if (text.length > 0) {
+    return false;
+  }
+
+  const hasAssociatedSignal =
+    Boolean(message.associatedMessageGuid?.trim()) ||
+    typeof message.associatedMessageType === "number";
+
+  // updated-message without text or reaction metadata is delivery/playback state noise.
+  if (!hasAssociatedSignal) {
+    return true;
+  }
+
+  return false;
+}
+
+function buildInboundReplayKey(params: {
+  target: WebhookTarget;
+  message: NormalizedWebhookMessage;
+}): string | undefined {
+  const { target, message } = params;
+  const messageId = message.messageId?.trim();
+  if (!messageId) {
+    return undefined;
+  }
+
+  const chatKey =
+    message.chatGuid?.trim() ??
+    message.chatIdentifier?.trim() ??
+    (typeof message.chatId === "number" && Number.isFinite(message.chatId)
+      ? String(message.chatId)
+      : "");
+  const itemType =
+    typeof message.itemType === "number" && Number.isFinite(message.itemType)
+      ? String(message.itemType)
+      : "";
+  const dateEdited =
+    typeof message.dateEdited === "number" && Number.isFinite(message.dateEdited)
+      ? String(message.dateEdited)
+      : "";
+  const associatedMessageGuid = message.associatedMessageGuid?.trim() ?? "";
+  const associatedMessageType =
+    typeof message.associatedMessageType === "number" &&
+    Number.isFinite(message.associatedMessageType)
+      ? String(message.associatedMessageType)
+      : "";
+  const hasText = message.text.trim().length > 0 ? "1" : "0";
+  const hasAttachments = (message.attachments?.length ?? 0) > 0 ? "1" : "0";
+  const hasBalloon = message.balloonBundleId?.trim() ? "1" : "0";
+
+  return [
+    "bluebubbles",
+    target.account.accountId,
+    message.senderId,
+    chatKey,
+    messageId,
+    itemType,
+    dateEdited,
+    associatedMessageGuid,
+    associatedMessageType,
+    hasText,
+    hasAttachments,
+    hasBalloon,
+  ].join("|");
+}
+
 export async function handleBlueBubblesWebhookRequest(
   req: IncomingMessage,
   res: ServerResponse,
@@ -206,12 +302,7 @@ export async function handleBlueBubblesWebhookRequest(
       return true;
     }
     const reaction = normalizeWebhookReaction(payload);
-    if (
-      (eventType === "updated-message" ||
-        eventType === "message-reaction" ||
-        eventType === "reaction") &&
-      !reaction
-    ) {
+    if ((eventType === "message-reaction" || eventType === "reaction") && !reaction) {
       res.statusCode = 200;
       res.end("ok");
       if (firstTarget) {
@@ -231,6 +322,19 @@ export async function handleBlueBubblesWebhookRequest(
       return true;
     }
 
+    if (message && shouldIgnoreUpdatedNonConversationalEvent(eventType, message)) {
+      if (firstTarget) {
+        logVerbose(
+          firstTarget.core,
+          firstTarget.runtime,
+          `webhook ignored updated-message non-conversational payload guid=${message.messageId ?? ""} text=${message.text.trim().slice(0, 80)}`,
+        );
+      }
+      res.statusCode = 200;
+      res.end("ok");
+      return true;
+    }
+
     target.statusSink?.({ lastInboundAt: Date.now() });
     if (reaction) {
       processReaction(reaction, target).catch((err) => {
@@ -239,6 +343,18 @@ export async function handleBlueBubblesWebhookRequest(
         );
       });
     } else if (message) {
+      const replayKey = buildInboundReplayKey({ target, message });
+      if (replayKey && recentInboundWebhookEvents.check(replayKey)) {
+        logVerbose(
+          target.core,
+          target.runtime,
+          `webhook dropped replay payload sender=${message.senderId} msg=${message.messageId ?? ""}`,
+        );
+        res.statusCode = 200;
+        res.end("ok");
+        return true;
+      }
+
       // Route messages through debouncer to coalesce rapid-fire events
       // (e.g., text message + URL balloon arriving as separate webhooks)
       const debouncer = debounceRegistry.getOrCreateDebouncer(target);
@@ -324,4 +440,13 @@ export async function monitorBlueBubblesProvider(
   });
 }
 
-export { _resetBlueBubblesShortIdState, resolveBlueBubblesMessageId, resolveWebhookPathFromConfig };
+function _resetBlueBubblesWebhookReplayState(): void {
+  recentInboundWebhookEvents.clear();
+}
+
+export {
+  _resetBlueBubblesShortIdState,
+  _resetBlueBubblesWebhookReplayState,
+  resolveBlueBubblesMessageId,
+  resolveWebhookPathFromConfig,
+};
