@@ -422,21 +422,29 @@ export async function handleBlueBubblesWebhookRequest(
         pendingInboundWebhookReplayKeys.add(replayKey);
       }
       void debouncer
-        .enqueue({ message, target })
-        .then(() => {
-          if (replayKey) {
-            recentInboundWebhookEvents.check(replayKey);
-          }
+        .enqueue({
+          message,
+          target,
+          eventType,
+          replayLifecycle: replayKey
+            ? {
+                onFlushSuccess: () => {
+                  recentInboundWebhookEvents.check(replayKey);
+                  pendingInboundWebhookReplayKeys.delete(replayKey);
+                },
+                onFlushFailure: () => {
+                  pendingInboundWebhookReplayKeys.delete(replayKey);
+                },
+              }
+            : undefined,
         })
         .catch((err) => {
-          target.runtime.error?.(
-            `[${target.account.accountId}] BlueBubbles webhook failed: ${String(err)}`,
-          );
-        })
-        .finally(() => {
           if (replayKey) {
             pendingInboundWebhookReplayKeys.delete(replayKey);
           }
+          target.runtime.error?.(
+            `[${target.account.accountId}] BlueBubbles webhook failed: ${String(err)}`,
+          );
         });
     }
 
