@@ -391,7 +391,7 @@ export function handleMessageEnd(
         ctx.params.messageProvider.trim().length > 0 &&
         typeof ctx.params.originatingTo === "string" &&
         ctx.params.originatingTo.trim().length > 0;
-      const shouldSuppressBlockReply = hasRoutingScope
+      const suppressByRoute = hasRoutingScope
         ? shouldSuppressMessagingToolReplies({
             messageProvider: ctx.params.messageProvider,
             messagingToolSentTargets: ctx.state.messagingToolSentTargets,
@@ -399,6 +399,9 @@ export function handleMessageEnd(
             accountId: ctx.params.accountId,
           })
         : true;
+      const shouldSuppressBlockReply = hasRoutingScope
+        ? suppressByRoute || ctx.state.messagingToolSentTargets.length === 0
+        : suppressByRoute;
       if (
         shouldSuppressBlockReply &&
         isMessagingToolDuplicateNormalized(

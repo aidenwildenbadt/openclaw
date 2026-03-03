@@ -28,11 +28,18 @@ async function emitMessageToolLifecycle(params: {
   message: string;
   result: unknown;
 }) {
+  const args: { action: "send"; message: string; to?: string } = {
+    action: "send",
+    message: params.message,
+  };
+  if (typeof params.to === "string") {
+    args.to = params.to;
+  }
   params.emit({
     type: "tool_execution_start",
     toolName: "message",
     toolCallId: params.toolCallId,
-    args: { action: "send", to: params.to ?? "+1555", message: params.message },
+    args,
   });
   // Wait for async handler to complete.
   await Promise.resolve();
@@ -68,6 +75,20 @@ describe("subscribeEmbeddedPiSession", () => {
       emit,
       toolCallId: "tool-message-1",
       to: "+14155592088",
+      message: messageText,
+      result: "ok",
+    });
+    emitAssistantMessageEnd(emit, messageText);
+
+    expect(onBlockReply).not.toHaveBeenCalled();
+  });
+  it("suppresses message_end block replies when send target cannot be extracted", async () => {
+    const { emit, onBlockReply } = createBlockReplyHarness("message_end");
+
+    const messageText = "This is the answer.";
+    await emitMessageToolLifecycle({
+      emit,
+      toolCallId: "tool-message-missing-target",
       message: messageText,
       result: "ok",
     });

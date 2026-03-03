@@ -198,30 +198,33 @@ export async function runReplyAgent(params: {
     const now = Date.now();
     const stateEntry =
       activeSessionEntry ?? (sessionKey ? activeSessionStore?.[sessionKey] : undefined);
+    // No stable session state means we cannot track cooldown safely; skip notice
+    // instead of risking repeated busy-message spam.
+    if (!stateEntry) {
+      return undefined;
+    }
     const lastNoticeAt =
-      stateEntry && typeof stateEntry.lastBusyQueueNoticeAt === "number"
+      typeof stateEntry.lastBusyQueueNoticeAt === "number"
         ? stateEntry.lastBusyQueueNoticeAt
         : undefined;
     if (typeof lastNoticeAt === "number" && now - lastNoticeAt < BUSY_QUEUE_NOTICE_COOLDOWN_MS) {
       return undefined;
     }
-    if (stateEntry) {
-      stateEntry.lastBusyQueueNoticeAt = now;
-      stateEntry.updatedAt = now;
-      activeSessionEntry = stateEntry;
-      if (sessionKey && activeSessionStore) {
-        activeSessionStore[sessionKey] = stateEntry;
-      }
-      if (sessionKey && storePath) {
-        await updateSessionStoreEntry({
-          storePath,
-          sessionKey,
-          update: async () => ({
-            lastBusyQueueNoticeAt: now,
-            updatedAt: now,
-          }),
-        });
-      }
+    stateEntry.lastBusyQueueNoticeAt = now;
+    stateEntry.updatedAt = now;
+    activeSessionEntry = stateEntry;
+    if (sessionKey && activeSessionStore) {
+      activeSessionStore[sessionKey] = stateEntry;
+    }
+    if (sessionKey && storePath) {
+      await updateSessionStoreEntry({
+        storePath,
+        sessionKey,
+        update: async () => ({
+          lastBusyQueueNoticeAt: now,
+          updatedAt: now,
+        }),
+      });
     }
     return { text: BUSY_QUEUE_NOTICE_TEXT };
   };

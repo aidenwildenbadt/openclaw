@@ -210,12 +210,15 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
       // Backward-compatible fallback when upstream caller does not provide routing context.
       return true;
     }
-    return shouldSuppressMessagingToolReplies({
+    const suppressByRoute = shouldSuppressMessagingToolReplies({
       messageProvider: params.messageProvider,
       messagingToolSentTargets,
       originatingTo: params.originatingTo,
       accountId: params.accountId,
     });
+    // Preserve legacy behavior when we captured a sent text but could not
+    // extract a target (for example providerless/invalid tool args).
+    return suppressByRoute || messagingToolSentTargets.length === 0;
   };
   const trimMessagingToolSent = () => {
     if (messagingToolSentTexts.length > MAX_MESSAGING_SENT_TEXTS) {

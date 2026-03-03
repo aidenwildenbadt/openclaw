@@ -304,6 +304,29 @@ describe("runReplyAgent heartbeat followup guard", () => {
   });
 
   it("still enqueues non-heartbeat runs when another run is active and emits busy notice", async () => {
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+    };
+    const { run } = createMinimalRun({
+      opts: { isHeartbeat: false },
+      isActive: true,
+      shouldFollowup: true,
+      resolvedQueueMode: "collect",
+      sessionEntry,
+      sessionStore: { main: sessionEntry },
+    });
+
+    const result = await run();
+
+    expect(result).toMatchObject({
+      text: expect.stringContaining("Still working on your previous request"),
+    });
+    expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledTimes(1);
+    expect(state.runEmbeddedPiAgentMock).not.toHaveBeenCalled();
+  });
+
+  it("enqueues non-heartbeat runs without emitting busy notice when session state is unavailable", async () => {
     const { run } = createMinimalRun({
       opts: { isHeartbeat: false },
       isActive: true,
@@ -313,9 +336,7 @@ describe("runReplyAgent heartbeat followup guard", () => {
 
     const result = await run();
 
-    expect(result).toMatchObject({
-      text: expect.stringContaining("Still working on your previous request"),
-    });
+    expect(result).toBeUndefined();
     expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledTimes(1);
     expect(state.runEmbeddedPiAgentMock).not.toHaveBeenCalled();
   });
