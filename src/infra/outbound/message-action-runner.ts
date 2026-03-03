@@ -23,6 +23,7 @@ import { getAgentScopedMediaLocalRoots } from "../../media/local-roots.js";
 import { buildChannelAccountBindings } from "../../routing/bindings.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import {
+  isDeliverableMessageChannel,
   normalizeMessageChannel,
   type GatewayClientMode,
   type GatewayClientName,
@@ -331,9 +332,13 @@ async function normalizeTargetsParamForAction(params: {
         `Conflicting destinations provided for ${params.action}. Use either targets or a single target destination.`,
       );
     }
-    const explicitChannelHint =
+    const normalizedChannelHint =
       typeof params.args.channel === "string"
-        ? (normalizeMessageChannel(params.args.channel) ?? params.args.channel.trim().toLowerCase())
+        ? normalizeMessageChannel(params.args.channel.trim())
+        : undefined;
+    const explicitChannelHint =
+      normalizedChannelHint && isDeliverableMessageChannel(normalizedChannelHint)
+        ? normalizedChannelHint
         : undefined;
     let channelHint =
       explicitChannelHint ?? normalizeMessageChannel(params.toolContext?.currentChannelProvider);

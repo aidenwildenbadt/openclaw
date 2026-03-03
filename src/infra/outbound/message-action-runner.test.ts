@@ -500,6 +500,58 @@ describe("runMessageAction context isolation", () => {
     });
   });
 
+  it("falls back to tool-context provider when multi-target remap channel is a channel id", async () => {
+    await withSandbox(async (workspaceDir) => {
+      await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });
+      await fs.writeFile(
+        path.join(workspaceDir, "memory", "routing-targets.json"),
+        JSON.stringify({
+          groups: {
+            support: {
+              member_handles: ["U11111111", "U22222222"],
+              channels: {
+                slack: "channel:C76543210",
+              },
+            },
+          },
+        }),
+      );
+
+      const cfg = {
+        channels: {
+          slack: {
+            botToken: "xoxb-test",
+            appToken: "xapp-test",
+          },
+        },
+        agents: {
+          defaults: {
+            workspace: workspaceDir,
+          },
+        },
+      } as OpenClawConfig;
+
+      const result = await runDrySend({
+        cfg,
+        actionParams: {
+          channel: "C12345678",
+          targets: ["U11111111", "U22222222"],
+          message: "hi",
+        },
+        toolContext: {
+          currentChannelProvider: "slack",
+        },
+      });
+
+      expect(result.kind).toBe("send");
+      if (result.kind !== "send") {
+        throw new Error("expected send result");
+      }
+      expect(result.channel).toBe("slack");
+      expect(result.to).toMatch(/C76543210/);
+    });
+  });
+
   it("requires an exact group member set when mapping multi-target send", async () => {
     await withSandbox(async (workspaceDir) => {
       await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });
