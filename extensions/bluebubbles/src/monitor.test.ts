@@ -1975,6 +1975,69 @@ describe("BlueBubbles webhook monitor", () => {
       expect(mockDispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
     });
 
+    it("does not drop updated-message replay when attachment identity changes", async () => {
+      const account = createMockAccount({ dmPolicy: "open" });
+      const config: OpenClawConfig = {};
+      const core = createMockRuntime();
+      setBlueBubblesRuntime(core);
+
+      unregister = registerBlueBubblesWebhookTarget({
+        account,
+        config,
+        runtime: { log: vi.fn(), error: vi.fn() },
+        core,
+        path: "/bluebubbles-webhook",
+      });
+
+      const messageId = "dup-msg-attachment-1";
+      const sender = "+15551234567";
+
+      await handleBlueBubblesWebhookRequest(
+        createMockRequest("POST", "/bluebubbles-webhook", {
+          type: "new-message",
+          data: {
+            text: "check attachment updates",
+            handle: { address: sender },
+            isGroup: false,
+            isFromMe: false,
+            guid: messageId,
+            chatGuid: "iMessage;-;+15551234567",
+            date: Date.now(),
+          },
+        }),
+        createMockResponse(),
+      );
+
+      await handleBlueBubblesWebhookRequest(
+        createMockRequest("POST", "/bluebubbles-webhook", {
+          type: "updated-message",
+          data: {
+            text: "check attachment updates",
+            handle: { address: sender },
+            isGroup: false,
+            isFromMe: false,
+            guid: messageId,
+            chatGuid: "iMessage;-;+15551234567",
+            attachments: [
+              {
+                guid: "att-replay-2",
+                mimeType: "image/jpeg",
+                transferName: "photo.jpg",
+                totalBytes: 2048,
+              },
+            ],
+            date: Date.now(),
+          },
+        }),
+        createMockResponse(),
+      );
+
+      await flushAsync();
+      expect(mockDispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(2);
+      const secondCallArgs = mockDispatchReplyWithBufferedBlockDispatcher.mock.calls[1]?.[0];
+      expect(secondCallArgs?.ctx.MediaPaths).toEqual(["/tmp/test-media.jpg"]);
+    });
+
     it("still processes updated-message edits when dateEdited is present", async () => {
       vi.useFakeTimers();
       try {
@@ -2138,6 +2201,36 @@ describe("BlueBubbles webhook monitor", () => {
       );
 
       await flushAsync();
+      expect(mockDispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    });
+
+    it("returns 200 for updated-message payloads that cannot be normalized", async () => {
+      const account = createMockAccount({ dmPolicy: "open" });
+      const config: OpenClawConfig = {};
+      const core = createMockRuntime();
+      setBlueBubblesRuntime(core);
+
+      unregister = registerBlueBubblesWebhookTarget({
+        account,
+        config,
+        runtime: { log: vi.fn(), error: vi.fn() },
+        core,
+        path: "/bluebubbles-webhook",
+      });
+
+      const res = createMockResponse();
+      const handled = await handleBlueBubblesWebhookRequest(
+        createMockRequest("POST", "/bluebubbles-webhook", {
+          type: "updated-message",
+          data: {},
+        }),
+        res,
+      );
+
+      await flushAsync();
+      expect(handled).toBe(true);
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toBe("ok");
       expect(mockDispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
     });
   });

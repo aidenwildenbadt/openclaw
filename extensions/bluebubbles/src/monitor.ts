@@ -29,6 +29,7 @@ import {
 } from "./monitor-shared.js";
 import { fetchBlueBubblesServerInfo } from "./probe.js";
 import { getBlueBubblesRuntime } from "./runtime.js";
+import type { BlueBubblesAttachment } from "./types.js";
 
 const webhookTargets = new Map<string, WebhookTarget[]>();
 const webhookInFlightLimiter = createWebhookInFlightLimiter();
@@ -144,6 +145,37 @@ function computeReplayTextFingerprint(text: string): string {
   return createHash("sha1").update(trimmed).digest("hex");
 }
 
+function computeAttachmentReplayFingerprint(
+  attachments: BlueBubblesAttachment[] | undefined,
+): string {
+  if (!attachments || attachments.length === 0) {
+    return "";
+  }
+  const normalized = attachments
+    .map((attachment) =>
+      [
+        attachment.guid?.trim() ?? "",
+        attachment.transferName?.trim() ?? "",
+        attachment.mimeType?.trim() ?? "",
+        attachment.uti?.trim() ?? "",
+        typeof attachment.totalBytes === "number" && Number.isFinite(attachment.totalBytes)
+          ? String(attachment.totalBytes)
+          : "",
+        typeof attachment.height === "number" && Number.isFinite(attachment.height)
+          ? String(attachment.height)
+          : "",
+        typeof attachment.width === "number" && Number.isFinite(attachment.width)
+          ? String(attachment.width)
+          : "",
+        typeof attachment.originalROWID === "number" && Number.isFinite(attachment.originalROWID)
+          ? String(attachment.originalROWID)
+          : "",
+      ].join("~"),
+    )
+    .sort();
+  return createHash("sha1").update(normalized.join("|")).digest("hex");
+}
+
 function shouldIgnoreUpdatedNonConversationalEvent(
   eventType: string,
   message: NormalizedWebhookMessage,
@@ -206,7 +238,7 @@ function buildInboundReplayKey(params: {
       ? String(message.associatedMessageType)
       : "";
   const textFingerprint = computeReplayTextFingerprint(message.text);
-  const hasAttachments = (message.attachments?.length ?? 0) > 0 ? "1" : "0";
+  const attachmentFingerprint = computeAttachmentReplayFingerprint(message.attachments);
   const hasBalloon = message.balloonBundleId?.trim() ? "1" : "0";
 
   return [
@@ -220,7 +252,7 @@ function buildInboundReplayKey(params: {
     associatedMessageGuid,
     associatedMessageType,
     textFingerprint,
-    hasAttachments,
+    attachmentFingerprint,
     hasBalloon,
   ].join("|");
 }
@@ -327,6 +359,18 @@ export async function handleBlueBubblesWebhookRequest(
     }
     const message = reaction ? null : normalizeWebhookMessage(payload);
     if (!message && !reaction) {
+      if (eventType === "updated-message") {
+        res.statusCode = 200;
+        res.end("ok");
+        if (firstTarget) {
+          logVerbose(
+            firstTarget.core,
+            firstTarget.runtime,
+            "webhook ignored updated-message without parseable message payload",
+          );
+        }
+        return true;
+      }
       res.statusCode = 400;
       res.end("invalid payload");
       console.warn("[bluebubbles] webhook rejected: unable to parse message payload");
