@@ -37,6 +37,11 @@ import { SafeOpenError, readLocalFileSafely, writeFileWithinRoot } from "../../i
 import { assertNoPathAliasEscape } from "../../infra/path-alias-guards.js";
 import { isNotFoundPathError } from "../../infra/path-guards.js";
 import { DEFAULT_AGENT_ID, normalizeAgentId } from "../../routing/session-key.js";
+import {
+  activateSecretsRuntimeSnapshot,
+  getActiveSecretsRuntimeSnapshot,
+  prepareSecretsRuntimeSnapshot,
+} from "../../secrets/runtime.js";
 import { resolveUserPath } from "../../utils.js";
 import {
   ErrorCodes,
@@ -112,17 +117,9 @@ async function waitForAgentReady(agentId: string): Promise<{ ok: true } | { ok: 
 
   for (;;) {
     clearConfigCache();
-    // Runtime snapshots can pin loadConfig() until hot reload; poll the file snapshot
-    // so agents.create can observe newly written config in restart/off reload modes.
-    let cfg = loadConfig();
-    try {
-      const snapshot = await readConfigFileSnapshot();
-      if (snapshot.exists && snapshot.valid) {
-        cfg = snapshot.config;
-      }
-    } catch {
-      // Fall back to loadConfig() if snapshot read fails transiently.
-    }
+    // Readiness must reflect runtime visibility because follow-up RPCs resolve
+    // agent IDs from loadConfig().
+    const cfg = loadConfig();
     const foundInEntries = findAgentEntryIndex(listAgentEntries(cfg), agentId) >= 0;
     const resolvableForFiles = resolveAgentIdOrError(agentId, cfg) === agentId;
     if (foundInEntries && resolvableForFiles) {
@@ -135,6 +132,18 @@ async function waitForAgentReady(agentId: string): Promise<{ ok: true } | { ok: 
     }
     await delayMs(Math.min(pollMs, remainingMs));
   }
+}
+
+async function refreshRuntimeSnapshotAfterAgentCreate(): Promise<void> {
+  if (!getActiveSecretsRuntimeSnapshot()) {
+    return;
+  }
+  const snapshot = await readConfigFileSnapshot();
+  if (!snapshot.exists || !snapshot.valid) {
+    return;
+  }
+  const prepared = await prepareSecretsRuntimeSnapshot({ config: snapshot.config });
+  activateSecretsRuntimeSnapshot(prepared);
 }
 
 function resolveAgentWorkspaceFileOrRespondError(
@@ -557,6 +566,12 @@ export const agentsHandlers: GatewayRequestHandlers = {
       "",
     ];
     await fs.appendFile(identityPath, lines.join("\n"), "utf-8");
+
+    try {
+      await refreshRuntimeSnapshotAfterAgentCreate();
+    } catch {
+      // Best-effort: if runtime refresh fails, readiness polling still retries.
+    }
 
     const ready = await waitForAgentReady(agentId);
     if (!ready.ok) {

@@ -8,6 +8,8 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 const mocks = vi.hoisted(() => {
   const state = {
     writtenConfig: null as Record<string, unknown> | null,
+    runtimeSnapshotActive: true,
+    runtimeConfig: null as Record<string, unknown> | null,
   };
   return {
     state,
@@ -71,12 +73,34 @@ const mocks = vi.hoisted(() => {
     fsLstat: vi.fn(async (..._args: unknown[]) => null as import("node:fs").Stats | null),
     fsRealpath: vi.fn(async (p: string) => p),
     fsOpen: vi.fn(async () => ({}) as unknown),
+    getActiveSecretsRuntimeSnapshot: vi.fn(() =>
+      state.runtimeSnapshotActive
+        ? {
+            sourceConfig: {},
+            config: {},
+            authStores: [],
+            warnings: [],
+          }
+        : null,
+    ),
+    prepareSecretsRuntimeSnapshot: vi.fn(
+      async ({ config }: { config: Record<string, unknown> }) => ({
+        sourceConfig: config,
+        config,
+        authStores: [],
+        warnings: [],
+      }),
+    ),
+    activateSecretsRuntimeSnapshot: vi.fn((snapshot: { config: Record<string, unknown> }) => {
+      state.runtimeSnapshotActive = true;
+      state.runtimeConfig = snapshot.config;
+    }),
   };
 });
 
 vi.mock("../../config/config.js", () => ({
   clearConfigCache: mocks.clearConfigCache,
-  loadConfig: () => mocks.loadConfigReturn,
+  loadConfig: () => mocks.state.runtimeConfig ?? mocks.loadConfigReturn,
   readConfigFileSnapshot: async () => {
     const config = mocks.state.writtenConfig ?? mocks.loadConfigReturn;
     return {
@@ -139,6 +163,12 @@ vi.mock("../../utils.js", () => ({
 
 vi.mock("../session-utils.js", () => ({
   listAgentsForGateway: mocks.listAgentsForGateway,
+}));
+
+vi.mock("../../secrets/runtime.js", () => ({
+  getActiveSecretsRuntimeSnapshot: mocks.getActiveSecretsRuntimeSnapshot,
+  prepareSecretsRuntimeSnapshot: mocks.prepareSecretsRuntimeSnapshot,
+  activateSecretsRuntimeSnapshot: mocks.activateSecretsRuntimeSnapshot,
 }));
 
 // Mock node:fs/promises – agents.ts uses `import fs from "node:fs/promises"`
@@ -281,6 +311,8 @@ async function expectUnsafeWorkspaceFile(method: "agents.files.get" | "agents.fi
 
 beforeEach(() => {
   mocks.state.writtenConfig = null;
+  mocks.state.runtimeSnapshotActive = true;
+  mocks.state.runtimeConfig = null;
   mocks.writeConfigFile.mockImplementation(async (cfg: unknown) => {
     if (cfg && typeof cfg === "object") {
       mocks.state.writtenConfig = { ...(cfg as Record<string, unknown>) };
@@ -344,13 +376,46 @@ describe("agents.create", () => {
     expect(mocks.writeConfigFile).toHaveBeenCalled();
   });
 
+  it("refreshes runtime snapshot so follow-up RPCs can resolve the new agent", async () => {
+    mocks.loadConfigReturn = { gateway: { reload: { mode: "off" } } };
+    const { respond, promise } = makeCall("agents.create", {
+      name: "Ready Agent",
+      workspace: "/home/user/agents/ready",
+    });
+    await promise;
+
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        ok: true,
+        agentId: "ready-agent",
+      }),
+      undefined,
+    );
+    expect(mocks.prepareSecretsRuntimeSnapshot).toHaveBeenCalledTimes(1);
+    expect(mocks.activateSecretsRuntimeSnapshot).toHaveBeenCalledTimes(1);
+
+    const { respond: filesRespond, promise: filesPromise } = makeCall("agents.files.list", {
+      agentId: "ready-agent",
+    });
+    await filesPromise;
+    expect(filesRespond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({ agentId: "ready-agent" }),
+      undefined,
+    );
+  });
+
   it("ensures workspace is set up before writing config", async () => {
     const callOrder: string[] = [];
     mocks.ensureAgentWorkspace.mockImplementation(async () => {
       callOrder.push("ensureAgentWorkspace");
     });
-    mocks.writeConfigFile.mockImplementation(async () => {
+    mocks.writeConfigFile.mockImplementation(async (cfg: unknown) => {
       callOrder.push("writeConfigFile");
+      if (cfg && typeof cfg === "object") {
+        mocks.state.writtenConfig = { ...(cfg as Record<string, unknown>) };
+      }
     });
 
     const { promise } = makeCall("agents.create", {
@@ -436,6 +501,42 @@ describe("agents.create", () => {
       expect.stringMatching(/- Name: Fancy Agent[\s\S]*- Emoji: 🤖[\s\S]*- Avatar:/),
       "utf-8",
     );
+  });
+
+  it("fails readiness when runtime config never includes the newly written agent", async () => {
+    const previousTimeout = process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS;
+    const previousPoll = process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS;
+    process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS = "25";
+    process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS = "5";
+    mocks.state.runtimeSnapshotActive = false;
+    try {
+      const { respond, promise } = makeCall("agents.create", {
+        name: "Never Visible Agent",
+        workspace: "/tmp/ws",
+      });
+      await promise;
+
+      expect(mocks.prepareSecretsRuntimeSnapshot).not.toHaveBeenCalled();
+      expect(mocks.activateSecretsRuntimeSnapshot).not.toHaveBeenCalled();
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({
+          message: expect.stringContaining("created but not yet resolvable"),
+        }),
+      );
+    } finally {
+      if (previousTimeout === undefined) {
+        delete process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS;
+      } else {
+        process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS = previousTimeout;
+      }
+      if (previousPoll === undefined) {
+        delete process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS;
+      } else {
+        process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS = previousPoll;
+      }
+    }
   });
 });
 
