@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
-import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import { resolveAgentWorkspaceDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
 import {
   readNumberParam,
   readStringArrayParam,
@@ -201,11 +201,11 @@ function normalizeRoutingHandle(value: string): string {
 }
 
 function resolveKnownGroupTargetFromRoutingMap(params: {
-  cfg: OpenClawConfig;
+  workspace?: string;
   channelHint?: string;
   targets: string[];
 }): { channel: string; target: string } | undefined {
-  const workspace = params.cfg.agents?.defaults?.workspace?.trim();
+  const workspace = params.workspace?.trim();
   if (!workspace) {
     return undefined;
   }
@@ -292,10 +292,10 @@ function resolveKnownGroupTargetFromRoutingMap(params: {
 }
 
 function normalizeTargetsParamForAction(params: {
-  cfg: OpenClawConfig;
   action: ChannelMessageActionName;
   args: Record<string, unknown>;
   toolContext?: ChannelThreadingToolContext;
+  routingWorkspace?: string;
 }) {
   const targets = readTrimmedTargetsParam(params.args);
   if (targets.length === 0) {
@@ -327,7 +327,7 @@ function normalizeTargetsParamForAction(params: {
     const channelHint =
       explicitChannelHint ?? normalizeMessageChannel(params.toolContext?.currentChannelProvider);
     const mappedGroup = resolveKnownGroupTargetFromRoutingMap({
-      cfg: params.cfg,
+      workspace: params.routingWorkspace,
       channelHint,
       targets,
     });
@@ -906,7 +906,15 @@ export async function runMessageAction(
   parseComponentsParam(params);
 
   const action = input.action;
-  normalizeTargetsParamForAction({ cfg, action, args: params, toolContext: input.toolContext });
+  const routingWorkspace = resolvedAgentId
+    ? resolveAgentWorkspaceDir(cfg, resolvedAgentId)
+    : cfg.agents?.defaults?.workspace?.trim();
+  normalizeTargetsParamForAction({
+    action,
+    args: params,
+    toolContext: input.toolContext,
+    routingWorkspace,
+  });
   if (action === "broadcast") {
     return handleBroadcastAction(input, params);
   }

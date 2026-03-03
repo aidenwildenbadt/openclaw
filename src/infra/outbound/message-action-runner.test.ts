@@ -56,6 +56,8 @@ const runDryAction = (params: {
   toolContext?: Record<string, unknown>;
   abortSignal?: AbortSignal;
   sandboxRoot?: string;
+  sessionKey?: string;
+  agentId?: string;
 }) =>
   runMessageAction({
     cfg: params.cfg,
@@ -65,6 +67,8 @@ const runDryAction = (params: {
     dryRun: true,
     abortSignal: params.abortSignal,
     sandboxRoot: params.sandboxRoot,
+    sessionKey: params.sessionKey,
+    agentId: params.agentId,
   });
 
 const runDrySend = (params: {
@@ -73,6 +77,8 @@ const runDrySend = (params: {
   toolContext?: Record<string, unknown>;
   abortSignal?: AbortSignal;
   sandboxRoot?: string;
+  sessionKey?: string;
+  agentId?: string;
 }) =>
   runDryAction({
     ...params,
@@ -266,6 +272,60 @@ describe("runMessageAction context isolation", () => {
       }
       expect(result.channel).toBe("imessage");
       expect(result.to).toBe("chat_id:3");
+    });
+  });
+
+  it("uses active agent workspace routing map for non-default agent sessions", async () => {
+    await withSandbox(async (sandboxDir) => {
+      const defaultWorkspace = path.join(sandboxDir, "workspace-main");
+      const supportWorkspace = path.join(sandboxDir, "workspace-support");
+      await fs.mkdir(path.join(defaultWorkspace, "memory"), { recursive: true });
+      await fs.mkdir(path.join(supportWorkspace, "memory"), { recursive: true });
+      await fs.writeFile(
+        path.join(supportWorkspace, "memory", "routing-targets.json"),
+        JSON.stringify({
+          groups: {
+            kevin_fernanda: {
+              member_handles: ["+14155592088", "+14255320947"],
+              channels: {
+                imessage: "chat_id:99",
+              },
+            },
+          },
+        }),
+      );
+
+      const cfg = {
+        channels: {
+          imessage: { enabled: true },
+        },
+        agents: {
+          defaults: {
+            workspace: defaultWorkspace,
+          },
+          list: [
+            { id: "main", workspace: defaultWorkspace },
+            { id: "support", workspace: supportWorkspace },
+          ],
+        },
+      } as OpenClawConfig;
+
+      const result = await runDrySend({
+        cfg,
+        agentId: "support",
+        actionParams: {
+          channel: "imessage",
+          targets: ["+14155592088", "+14255320947"],
+          message: "hi",
+        },
+      });
+
+      expect(result.kind).toBe("send");
+      if (result.kind !== "send") {
+        throw new Error("expected send result");
+      }
+      expect(result.channel).toBe("imessage");
+      expect(result.to).toBe("chat_id:99");
     });
   });
 
