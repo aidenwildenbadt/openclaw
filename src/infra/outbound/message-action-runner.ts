@@ -566,14 +566,18 @@ async function handleBroadcastAction(
         if (!resolved.ok) {
           throw resolved.error;
         }
+        const sendParams = {
+          ...params,
+          channel: targetChannel,
+          target: resolved.target.to,
+        };
+        delete sendParams.targets;
+        delete sendParams.to;
+        delete sendParams.channelId;
         const sendResult = await runMessageAction({
           ...input,
           action: "send",
-          params: {
-            ...params,
-            channel: targetChannel,
-            target: resolved.target.to,
-          },
+          params: sendParams,
         });
         results.push({
           channel: targetChannel,

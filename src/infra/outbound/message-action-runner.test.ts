@@ -1030,6 +1030,25 @@ describe("runMessageAction context isolation", () => {
     expect(result.channel).toBe("slack");
   });
 
+  it("does not fail broadcast fan-out when nested send receives inherited targets", async () => {
+    const result = await runDryAction({
+      cfg: slackConfig,
+      action: "broadcast",
+      actionParams: {
+        targets: ["channel:C12345678", "channel:C99999999"],
+        channel: "slack",
+        message: "hi",
+      },
+    });
+
+    expect(result.kind).toBe("broadcast");
+    if (result.kind !== "broadcast") {
+      throw new Error("expected broadcast result");
+    }
+    expect(result.payload.results).toHaveLength(2);
+    expect(result.payload.results.every((entry) => entry.ok)).toBe(true);
+  });
+
   it("blocks cross-provider sends by default", async () => {
     await expect(
       runDrySend({
