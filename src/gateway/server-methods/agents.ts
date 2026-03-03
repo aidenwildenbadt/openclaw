@@ -25,7 +25,12 @@ import {
   listAgentEntries,
   pruneAgentConfig,
 } from "../../commands/agents.config.js";
-import { clearConfigCache, loadConfig, writeConfigFile } from "../../config/config.js";
+import {
+  clearConfigCache,
+  loadConfig,
+  readConfigFileSnapshot,
+  writeConfigFile,
+} from "../../config/config.js";
 import { resolveSessionTranscriptsDirForAgent } from "../../config/sessions/paths.js";
 import { sameFileIdentity } from "../../infra/file-identity.js";
 import { SafeOpenError, readLocalFileSafely, writeFileWithinRoot } from "../../infra/fs-safe.js";
@@ -107,7 +112,17 @@ async function waitForAgentReady(agentId: string): Promise<{ ok: true } | { ok: 
 
   for (;;) {
     clearConfigCache();
-    const cfg = loadConfig();
+    // Runtime snapshots can pin loadConfig() until hot reload; poll the file snapshot
+    // so agents.create can observe newly written config in restart/off reload modes.
+    let cfg = loadConfig();
+    try {
+      const snapshot = await readConfigFileSnapshot();
+      if (snapshot.exists && snapshot.valid) {
+        cfg = snapshot.config;
+      }
+    } catch {
+      // Fall back to loadConfig() if snapshot read fails transiently.
+    }
     const foundInEntries = findAgentEntryIndex(listAgentEntries(cfg), agentId) >= 0;
     const resolvableForFiles = resolveAgentIdOrError(agentId, cfg) === agentId;
     if (foundInEntries && resolvableForFiles) {

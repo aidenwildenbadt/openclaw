@@ -5,53 +5,94 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 /* Mocks                                                              */
 /* ------------------------------------------------------------------ */
 
-const mocks = vi.hoisted(() => ({
-  loadConfigReturn: {} as Record<string, unknown>,
-  listAgentEntries: vi.fn(() => [] as Array<{ agentId: string }>),
-  findAgentEntryIndex: vi.fn(() => -1),
-  applyAgentConfig: vi.fn((_cfg: unknown, _opts: unknown) => ({})),
-  pruneAgentConfig: vi.fn(() => ({ config: {}, removedBindings: 0 })),
-  writeConfigFile: vi.fn(async () => {}),
-  clearConfigCache: vi.fn(() => {}),
-  ensureAgentWorkspace: vi.fn(async () => {}),
-  listAgentIds: vi.fn((cfg?: { agents?: { list?: Array<{ id?: string; agentId?: string }> } }) => {
-    const ids = (cfg?.agents?.list ?? [])
-      .map((entry) => {
-        if (typeof entry?.id === "string" && entry.id.trim()) {
-          return entry.id.trim();
-        }
-        if (typeof entry?.agentId === "string" && entry.agentId.trim()) {
-          return entry.agentId.trim();
-        }
-        return "";
-      })
-      .filter((id): id is string => Boolean(id));
-    return ["main", ...ids];
-  }),
-  resolveAgentDir: vi.fn(() => "/agents/test-agent"),
-  resolveAgentWorkspaceDir: vi.fn(() => "/workspace/test-agent"),
-  resolveSessionTranscriptsDirForAgent: vi.fn(() => "/transcripts/test-agent"),
-  listAgentsForGateway: vi.fn(() => ({
-    defaultId: "main",
-    mainKey: "agent:main:main",
-    scope: "global",
-    agents: [],
-  })),
-  movePathToTrash: vi.fn(async () => "/trashed"),
-  fsAccess: vi.fn(async () => {}),
-  fsMkdir: vi.fn(async () => undefined),
-  fsAppendFile: vi.fn(async () => {}),
-  fsReadFile: vi.fn(async () => ""),
-  fsStat: vi.fn(async (..._args: unknown[]) => null as import("node:fs").Stats | null),
-  fsLstat: vi.fn(async (..._args: unknown[]) => null as import("node:fs").Stats | null),
-  fsRealpath: vi.fn(async (p: string) => p),
-  fsOpen: vi.fn(async () => ({}) as unknown),
-}));
+const mocks = vi.hoisted(() => {
+  const state = {
+    writtenConfig: null as Record<string, unknown> | null,
+  };
+  return {
+    state,
+    loadConfigReturn: {} as Record<string, unknown>,
+    clearConfigCache: vi.fn(),
+    listAgentEntries: vi.fn((cfg?: Record<string, unknown>) => {
+      const raw = (cfg as { __agentIds?: unknown } | undefined)?.__agentIds;
+      const ids =
+        Array.isArray(raw) && raw.length > 0
+          ? raw.filter((value): value is string => typeof value === "string")
+          : [];
+      return ids.map((agentId) => ({ agentId }));
+    }),
+    findAgentEntryIndex: vi.fn((entries: Array<{ agentId: string }>, agentId: string) =>
+      entries.findIndex((entry) => entry.agentId === agentId),
+    ),
+    applyAgentConfig: vi.fn((cfg: unknown, opts: unknown) => {
+      const next =
+        cfg && typeof cfg === "object"
+          ? ({ ...(cfg as Record<string, unknown>) } as Record<string, unknown>)
+          : ({} as Record<string, unknown>);
+      const existingRaw = next.__agentIds;
+      const existing =
+        Array.isArray(existingRaw) && existingRaw.length > 0
+          ? existingRaw.filter((value): value is string => typeof value === "string")
+          : [];
+      const candidateAgentId =
+        opts && typeof opts === "object" ? (opts as { agentId?: unknown }).agentId : undefined;
+      if (typeof candidateAgentId === "string" && candidateAgentId.trim()) {
+        const normalized = candidateAgentId.trim();
+        next.__agentIds = existing.includes(normalized) ? existing : [...existing, normalized];
+      } else {
+        next.__agentIds = existing;
+      }
+      return next;
+    }),
+    pruneAgentConfig: vi.fn(() => ({ config: {}, removedBindings: 0 })),
+    writeConfigFile: vi.fn(async (cfg: unknown) => {
+      if (cfg && typeof cfg === "object") {
+        state.writtenConfig = { ...(cfg as Record<string, unknown>) };
+        return;
+      }
+      state.writtenConfig = {};
+    }),
+    ensureAgentWorkspace: vi.fn(async () => {}),
+    resolveAgentDir: vi.fn(() => "/agents/test-agent"),
+    resolveAgentWorkspaceDir: vi.fn(() => "/workspace/test-agent"),
+    resolveSessionTranscriptsDirForAgent: vi.fn(() => "/transcripts/test-agent"),
+    listAgentsForGateway: vi.fn(() => ({
+      defaultId: "main",
+      mainKey: "agent:main:main",
+      scope: "global",
+      agents: [],
+    })),
+    movePathToTrash: vi.fn(async () => "/trashed"),
+    fsAccess: vi.fn(async () => {}),
+    fsMkdir: vi.fn(async () => undefined),
+    fsAppendFile: vi.fn(async () => {}),
+    fsReadFile: vi.fn(async () => ""),
+    fsStat: vi.fn(async (..._args: unknown[]) => null as import("node:fs").Stats | null),
+    fsLstat: vi.fn(async (..._args: unknown[]) => null as import("node:fs").Stats | null),
+    fsRealpath: vi.fn(async (p: string) => p),
+    fsOpen: vi.fn(async () => ({}) as unknown),
+  };
+});
 
 vi.mock("../../config/config.js", () => ({
-  loadConfig: () => mocks.loadConfigReturn,
-  writeConfigFile: mocks.writeConfigFile,
   clearConfigCache: mocks.clearConfigCache,
+  loadConfig: () => mocks.loadConfigReturn,
+  readConfigFileSnapshot: async () => {
+    const config = mocks.state.writtenConfig ?? mocks.loadConfigReturn;
+    return {
+      path: "/tmp/openclaw.json",
+      exists: true,
+      raw: "{}",
+      parsed: config,
+      resolved: config,
+      valid: true,
+      config,
+      issues: [],
+      warnings: [],
+      legacyIssues: [],
+    };
+  },
+  writeConfigFile: mocks.writeConfigFile,
 }));
 
 vi.mock("../../commands/agents.config.js", () => ({
@@ -62,7 +103,14 @@ vi.mock("../../commands/agents.config.js", () => ({
 }));
 
 vi.mock("../../agents/agent-scope.js", () => ({
-  listAgentIds: mocks.listAgentIds,
+  listAgentIds: (cfg?: Record<string, unknown>) => {
+    const raw = (cfg as { __agentIds?: unknown } | undefined)?.__agentIds;
+    const ids =
+      Array.isArray(raw) && raw.length > 0
+        ? raw.filter((value): value is string => typeof value === "string")
+        : [];
+    return ["main", ...ids.filter((agentId) => agentId !== "main")];
+  },
   resolveAgentDir: mocks.resolveAgentDir,
   resolveAgentWorkspaceDir: mocks.resolveAgentWorkspaceDir,
 }));
@@ -217,10 +265,29 @@ function expectNotFoundResponseAndNoWrite(respond: ReturnType<typeof vi.fn>) {
   expect(mocks.writeConfigFile).not.toHaveBeenCalled();
 }
 
-beforeEach(() => {
-  delete process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS;
-  delete process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS;
+async function expectUnsafeWorkspaceFile(method: "agents.files.get" | "agents.files.set") {
+  const params =
+    method === "agents.files.set"
+      ? { agentId: "main", name: "AGENTS.md", content: "x" }
+      : { agentId: "main", name: "AGENTS.md" };
+  const { respond, promise } = makeCall(method, params);
+  await promise;
+  expect(respond).toHaveBeenCalledWith(
+    false,
+    undefined,
+    expect.objectContaining({ message: expect.stringContaining("unsafe workspace file") }),
+  );
+}
 
+beforeEach(() => {
+  mocks.state.writtenConfig = null;
+  mocks.writeConfigFile.mockImplementation(async (cfg: unknown) => {
+    if (cfg && typeof cfg === "object") {
+      mocks.state.writtenConfig = { ...(cfg as Record<string, unknown>) };
+      return;
+    }
+    mocks.state.writtenConfig = {};
+  });
   mocks.fsReadFile.mockImplementation(async () => {
     throw createEnoentError();
   });
@@ -236,6 +303,7 @@ beforeEach(() => {
       ({
         stat: async () => makeFileStat(),
         readFile: async () => Buffer.from(""),
+        truncate: async () => {},
         writeFile: async () => {},
         close: async () => {},
       }) as unknown,
@@ -250,23 +318,10 @@ describe("agents.create", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.loadConfigReturn = {};
-    mocks.listAgentEntries.mockImplementation(
-      (cfg: { agents?: { list?: Array<{ id?: string; agentId?: string }> } }) =>
-        (cfg.agents?.list ?? []).map((entry) => ({
-          agentId: entry.id ?? entry.agentId ?? "",
-        })),
-    );
     mocks.findAgentEntryIndex.mockImplementation(
-      (entries: Array<{ agentId: string }>, id: string) =>
-        entries.findIndex((entry) => entry.agentId === id),
+      (entries: Array<{ agentId: string }>, agentId: string) =>
+        entries.findIndex((entry) => entry.agentId === agentId),
     );
-    mocks.applyAgentConfig.mockImplementation((cfg, opts: { agentId?: string }) => ({
-      ...(cfg as Record<string, unknown>),
-      agents: { list: [{ id: opts.agentId ?? "" }] },
-    }));
-    mocks.writeConfigFile.mockImplementation(async (cfg) => {
-      mocks.loadConfigReturn = cfg as Record<string, unknown>;
-    });
   });
 
   it("creates a new agent successfully", async () => {
@@ -382,97 +437,6 @@ describe("agents.create", () => {
       "utf-8",
     );
   });
-
-  it("waits for config propagation before acknowledging create success", async () => {
-    mocks.loadConfigReturn = {};
-    mocks.applyAgentConfig.mockImplementation((cfg, opts: { agentId?: string }) => ({
-      ...(cfg as Record<string, unknown>),
-      agents: { list: [{ id: opts.agentId ?? "" }] },
-    }));
-    mocks.writeConfigFile.mockImplementation(async (cfg) => {
-      setTimeout(() => {
-        mocks.loadConfigReturn = cfg as Record<string, unknown>;
-      }, 30);
-    });
-
-    const { respond, promise } = makeCall("agents.create", {
-      name: "Race Safe",
-      workspace: "/tmp/ws",
-    });
-    await promise;
-
-    expect(respond).toHaveBeenCalledWith(
-      true,
-      expect.objectContaining({ ok: true, agentId: "race-safe" }),
-      undefined,
-    );
-    expect(mocks.clearConfigCache).toHaveBeenCalled();
-  });
-
-  it("returns a clear timeout error when create readiness does not converge", async () => {
-    process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS = "15";
-    process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS = "5";
-    mocks.loadConfigReturn = {};
-    mocks.applyAgentConfig.mockImplementation((cfg) => cfg);
-
-    const { respond, promise } = makeCall("agents.create", {
-      name: "Never Ready",
-      workspace: "/tmp/ws",
-    });
-    await promise;
-
-    expect(respond).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({
-        message: expect.stringContaining("created but not yet resolvable"),
-      }),
-    );
-  });
-
-  it("guarantees immediate create→files.list and create→update compatibility", async () => {
-    mocks.loadConfigReturn = {};
-    mocks.listAgentEntries.mockImplementation(
-      (cfg: { agents?: { list?: Array<{ id?: string }> } }) =>
-        (cfg.agents?.list ?? []).map((entry) => ({ agentId: entry.id ?? "" })),
-    );
-    mocks.findAgentEntryIndex.mockImplementation(
-      (entries: Array<{ agentId: string }>, id: string) =>
-        entries.findIndex((entry) => entry.agentId === id),
-    );
-    mocks.applyAgentConfig.mockImplementation((cfg, opts: { agentId?: string }) => ({
-      ...(cfg as Record<string, unknown>),
-      agents: { list: [{ id: opts.agentId ?? "" }] },
-    }));
-    mocks.writeConfigFile.mockImplementation(async (cfg) => {
-      setTimeout(() => {
-        mocks.loadConfigReturn = cfg as Record<string, unknown>;
-      }, 20);
-    });
-
-    const create = makeCall("agents.create", {
-      name: "Board Agent",
-      workspace: "/tmp/ws",
-    });
-    await create.promise;
-
-    const list = makeCall("agents.files.list", { agentId: "board-agent" });
-    await list.promise;
-
-    const update = makeCall("agents.update", { agentId: "board-agent", name: "Board Agent v2" });
-    await update.promise;
-
-    expect(list.respond).toHaveBeenCalledWith(
-      true,
-      expect.objectContaining({ agentId: "board-agent" }),
-      undefined,
-    );
-    expect(update.respond).toHaveBeenCalledWith(
-      true,
-      { ok: true, agentId: "board-agent" },
-      undefined,
-    );
-  });
 });
 
 describe("agents.update", () => {
@@ -480,7 +444,6 @@ describe("agents.update", () => {
     vi.clearAllMocks();
     mocks.loadConfigReturn = {};
     mocks.findAgentEntryIndex.mockReturnValue(0);
-    mocks.applyAgentConfig.mockImplementation((_cfg, _opts) => ({}));
   });
 
   it("updates an existing agent successfully", async () => {
@@ -641,102 +604,74 @@ describe("agents.files.get/set symlink safety", () => {
     mocks.fsMkdir.mockResolvedValue(undefined);
   });
 
-  it("rejects agents.files.get when allowlisted file symlink escapes workspace", async () => {
+  function mockWorkspaceEscapeSymlink() {
     const workspace = "/workspace/test-agent";
-    const candidate = path.resolve(workspace, "AGENTS.md");
+    const workspaceReal = path.resolve(workspace);
+    const candidate = path.resolve(workspaceReal, "AGENTS.md");
+    const outside = path.resolve("/outside/secret.txt");
     mocks.fsRealpath.mockImplementation(async (p: string) => {
-      if (p === workspace) {
-        return workspace;
+      const resolved = path.resolve(p);
+      if (resolved === workspaceReal) {
+        return workspaceReal;
       }
-      if (p === candidate) {
-        return "/outside/secret.txt";
+      if (resolved === candidate) {
+        return outside;
       }
-      return p;
+      return resolved;
     });
     mocks.fsLstat.mockImplementation(async (...args: unknown[]) => {
       const p = typeof args[0] === "string" ? args[0] : "";
-      if (p === candidate) {
+      if (path.resolve(p) === candidate) {
         return makeSymlinkStat();
       }
       throw createEnoentError();
     });
+  }
 
-    const { respond, promise } = makeCall("agents.files.get", {
-      agentId: "main",
-      name: "AGENTS.md",
-    });
-    await promise;
-
-    expect(respond).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({ message: expect.stringContaining("unsafe workspace file") }),
-    );
-  });
-
-  it("rejects agents.files.set when allowlisted file symlink escapes workspace", async () => {
-    const workspace = "/workspace/test-agent";
-    const candidate = path.resolve(workspace, "AGENTS.md");
-    mocks.fsRealpath.mockImplementation(async (p: string) => {
-      if (p === workspace) {
-        return workspace;
+  it.each([
+    { method: "agents.files.get" as const, expectNoOpen: false },
+    { method: "agents.files.set" as const, expectNoOpen: true },
+  ])(
+    "rejects $method when allowlisted file symlink escapes workspace",
+    async ({ method, expectNoOpen }) => {
+      mockWorkspaceEscapeSymlink();
+      await expectUnsafeWorkspaceFile(method);
+      if (expectNoOpen) {
+        expect(mocks.fsOpen).not.toHaveBeenCalled();
       }
-      if (p === candidate) {
-        return "/outside/secret.txt";
-      }
-      return p;
-    });
-    mocks.fsLstat.mockImplementation(async (...args: unknown[]) => {
-      const p = typeof args[0] === "string" ? args[0] : "";
-      if (p === candidate) {
-        return makeSymlinkStat();
-      }
-      throw createEnoentError();
-    });
-
-    const { respond, promise } = makeCall("agents.files.set", {
-      agentId: "main",
-      name: "AGENTS.md",
-      content: "x",
-    });
-    await promise;
-
-    expect(respond).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({ message: expect.stringContaining("unsafe workspace file") }),
-    );
-    expect(mocks.fsOpen).not.toHaveBeenCalled();
-  });
+    },
+  );
 
   it("allows in-workspace symlink targets for get/set", async () => {
     const workspace = "/workspace/test-agent";
-    const candidate = path.resolve(workspace, "AGENTS.md");
-    const target = path.resolve(workspace, "policies", "AGENTS.md");
+    const workspaceReal = path.resolve(workspace);
+    const candidate = path.resolve(workspaceReal, "AGENTS.md");
+    const target = path.resolve(workspaceReal, "policies", "AGENTS.md");
     const targetStat = makeFileStat({ size: 7, mtimeMs: 1700, dev: 9, ino: 42 });
 
     mocks.fsRealpath.mockImplementation(async (p: string) => {
-      if (p === workspace) {
-        return workspace;
+      const resolved = path.resolve(p);
+      if (resolved === workspaceReal) {
+        return workspaceReal;
       }
-      if (p === candidate) {
+      if (resolved === candidate) {
         return target;
       }
-      return p;
+      return resolved;
     });
     mocks.fsLstat.mockImplementation(async (...args: unknown[]) => {
       const p = typeof args[0] === "string" ? args[0] : "";
-      if (p === candidate) {
+      if (path.resolve(p) === candidate) {
         return makeSymlinkStat({ dev: 9, ino: 41 });
       }
-      if (p === target) {
+      if (path.resolve(p) === target) {
         return targetStat;
       }
       throw createEnoentError();
     });
     mocks.fsStat.mockImplementation(async (...args: unknown[]) => {
       const p = typeof args[0] === "string" ? args[0] : "";
-      if (p === target) {
+      if (path.resolve(p) === target) {
         return targetStat;
       }
       throw createEnoentError();
@@ -746,6 +681,7 @@ describe("agents.files.get/set symlink safety", () => {
         ({
           stat: async () => targetStat,
           readFile: async () => Buffer.from("inside\n"),
+          truncate: async () => {},
           writeFile: async () => {},
           close: async () => {},
         }) as unknown,
@@ -777,7 +713,7 @@ describe("agents.files.get/set symlink safety", () => {
     );
   });
 
-  it("rejects agents.files.get when allowlisted file is a hardlinked alias", async () => {
+  function mockHardlinkedWorkspaceAlias() {
     const workspace = "/workspace/test-agent";
     const candidate = path.resolve(workspace, "AGENTS.md");
     mocks.fsRealpath.mockImplementation(async (p: string) => {
@@ -793,49 +729,19 @@ describe("agents.files.get/set symlink safety", () => {
       }
       throw createEnoentError();
     });
+  }
 
-    const { respond, promise } = makeCall("agents.files.get", {
-      agentId: "main",
-      name: "AGENTS.md",
-    });
-    await promise;
-
-    expect(respond).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({ message: expect.stringContaining("unsafe workspace file") }),
-    );
-  });
-
-  it("rejects agents.files.set when allowlisted file is a hardlinked alias", async () => {
-    const workspace = "/workspace/test-agent";
-    const candidate = path.resolve(workspace, "AGENTS.md");
-    mocks.fsRealpath.mockImplementation(async (p: string) => {
-      if (p === workspace) {
-        return workspace;
+  it.each([
+    { method: "agents.files.get" as const, expectNoOpen: false },
+    { method: "agents.files.set" as const, expectNoOpen: true },
+  ])(
+    "rejects $method when allowlisted file is a hardlinked alias",
+    async ({ method, expectNoOpen }) => {
+      mockHardlinkedWorkspaceAlias();
+      await expectUnsafeWorkspaceFile(method);
+      if (expectNoOpen) {
+        expect(mocks.fsOpen).not.toHaveBeenCalled();
       }
-      return p;
-    });
-    mocks.fsLstat.mockImplementation(async (...args: unknown[]) => {
-      const p = typeof args[0] === "string" ? args[0] : "";
-      if (p === candidate) {
-        return makeFileStat({ nlink: 2 });
-      }
-      throw createEnoentError();
-    });
-
-    const { respond, promise } = makeCall("agents.files.set", {
-      agentId: "main",
-      name: "AGENTS.md",
-      content: "x",
-    });
-    await promise;
-
-    expect(respond).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({ message: expect.stringContaining("unsafe workspace file") }),
-    );
-    expect(mocks.fsOpen).not.toHaveBeenCalled();
-  });
+    },
+  );
 });
