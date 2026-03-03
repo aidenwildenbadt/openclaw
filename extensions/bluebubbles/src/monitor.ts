@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   beginWebhookRequestPipelineOrReject,
@@ -130,7 +130,18 @@ function safeEqualSecret(aRaw: string, bRaw: string): boolean {
 }
 
 function looksLikeBlueBubblesGuid(value: string): boolean {
-  return /^[A-Za-z0-9-]{8,128}$/.test(value);
+  // Restrict to canonical UUID form to avoid dropping human-edited slugs/ticket IDs.
+  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(
+    value,
+  );
+}
+
+function computeReplayTextFingerprint(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "";
+  }
+  return createHash("sha1").update(trimmed).digest("hex");
 }
 
 function shouldIgnoreUpdatedNonConversationalEvent(
@@ -194,7 +205,7 @@ function buildInboundReplayKey(params: {
     Number.isFinite(message.associatedMessageType)
       ? String(message.associatedMessageType)
       : "";
-  const hasText = message.text.trim().length > 0 ? "1" : "0";
+  const textFingerprint = computeReplayTextFingerprint(message.text);
   const hasAttachments = (message.attachments?.length ?? 0) > 0 ? "1" : "0";
   const hasBalloon = message.balloonBundleId?.trim() ? "1" : "0";
 
@@ -208,7 +219,7 @@ function buildInboundReplayKey(params: {
     dateEdited,
     associatedMessageGuid,
     associatedMessageType,
-    hasText,
+    textFingerprint,
     hasAttachments,
     hasBalloon,
   ].join("|");
