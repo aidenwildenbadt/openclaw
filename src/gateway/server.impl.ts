@@ -772,6 +772,16 @@ export async function startGatewayServer(
       markChannelLoggedOut,
       wizardRunner,
       broadcastVoiceWakeChanged,
+      refreshRuntimeConfigFromDisk: async () => {
+        if (!getActiveSecretsRuntimeSnapshot()) {
+          return;
+        }
+        const snapshot = await readConfigFileSnapshot();
+        if (!snapshot.exists || !snapshot.valid) {
+          return;
+        }
+        await activateRuntimeSecrets(snapshot.config, { reason: "reload", activate: true });
+      },
     },
   });
   logGatewayStartup({

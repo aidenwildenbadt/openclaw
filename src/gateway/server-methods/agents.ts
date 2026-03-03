@@ -25,23 +25,13 @@ import {
   listAgentEntries,
   pruneAgentConfig,
 } from "../../commands/agents.config.js";
-import {
-  clearConfigCache,
-  loadConfig,
-  readConfigFileSnapshot,
-  writeConfigFile,
-} from "../../config/config.js";
+import { clearConfigCache, loadConfig, writeConfigFile } from "../../config/config.js";
 import { resolveSessionTranscriptsDirForAgent } from "../../config/sessions/paths.js";
 import { sameFileIdentity } from "../../infra/file-identity.js";
 import { SafeOpenError, readLocalFileSafely, writeFileWithinRoot } from "../../infra/fs-safe.js";
 import { assertNoPathAliasEscape } from "../../infra/path-alias-guards.js";
 import { isNotFoundPathError } from "../../infra/path-guards.js";
 import { DEFAULT_AGENT_ID, normalizeAgentId } from "../../routing/session-key.js";
-import {
-  activateSecretsRuntimeSnapshot,
-  getActiveSecretsRuntimeSnapshot,
-  prepareSecretsRuntimeSnapshot,
-} from "../../secrets/runtime.js";
 import { resolveUserPath } from "../../utils.js";
 import {
   ErrorCodes,
@@ -132,18 +122,6 @@ async function waitForAgentReady(agentId: string): Promise<{ ok: true } | { ok: 
     }
     await delayMs(Math.min(pollMs, remainingMs));
   }
-}
-
-async function refreshRuntimeSnapshotAfterAgentCreate(): Promise<void> {
-  if (!getActiveSecretsRuntimeSnapshot()) {
-    return;
-  }
-  const snapshot = await readConfigFileSnapshot();
-  if (!snapshot.exists || !snapshot.valid) {
-    return;
-  }
-  const prepared = await prepareSecretsRuntimeSnapshot({ config: snapshot.config });
-  activateSecretsRuntimeSnapshot(prepared);
 }
 
 function resolveAgentWorkspaceFileOrRespondError(
@@ -497,7 +475,7 @@ export const agentsHandlers: GatewayRequestHandlers = {
     const result = listAgentsForGateway(cfg);
     respond(true, result, undefined);
   },
-  "agents.create": async ({ params, respond }) => {
+  "agents.create": async ({ params, respond, context }) => {
     if (!validateAgentsCreateParams(params)) {
       respond(
         false,
@@ -568,7 +546,7 @@ export const agentsHandlers: GatewayRequestHandlers = {
     await fs.appendFile(identityPath, lines.join("\n"), "utf-8");
 
     try {
-      await refreshRuntimeSnapshotAfterAgentCreate();
+      await context.refreshRuntimeConfigFromDisk?.();
     } catch {
       // Best-effort: if runtime refresh fails, readiness polling still retries.
     }

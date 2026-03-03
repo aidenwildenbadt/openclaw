@@ -95,6 +95,12 @@ const mocks = vi.hoisted(() => {
       state.runtimeSnapshotActive = true;
       state.runtimeConfig = snapshot.config;
     }),
+    refreshRuntimeConfigFromDisk: vi.fn(async () => {
+      if (!state.runtimeSnapshotActive) {
+        return;
+      }
+      state.runtimeConfig = state.writtenConfig ? { ...state.writtenConfig } : state.runtimeConfig;
+    }),
   };
 });
 
@@ -206,7 +212,9 @@ function makeCall(method: keyof typeof agentsHandlers, params: Record<string, un
   const promise = handler({
     params,
     respond,
-    context: {} as never,
+    context: {
+      refreshRuntimeConfigFromDisk: mocks.refreshRuntimeConfigFromDisk,
+    } as never,
     req: { type: "req" as const, id: "1", method },
     client: null,
     isWebchatConnect: () => false,
@@ -392,8 +400,7 @@ describe("agents.create", () => {
       }),
       undefined,
     );
-    expect(mocks.prepareSecretsRuntimeSnapshot).toHaveBeenCalledTimes(1);
-    expect(mocks.activateSecretsRuntimeSnapshot).toHaveBeenCalledTimes(1);
+    expect(mocks.refreshRuntimeConfigFromDisk).toHaveBeenCalledTimes(1);
 
     const { respond: filesRespond, promise: filesPromise } = makeCall("agents.files.list", {
       agentId: "ready-agent",
@@ -516,8 +523,7 @@ describe("agents.create", () => {
       });
       await promise;
 
-      expect(mocks.prepareSecretsRuntimeSnapshot).not.toHaveBeenCalled();
-      expect(mocks.activateSecretsRuntimeSnapshot).not.toHaveBeenCalled();
+      expect(mocks.refreshRuntimeConfigFromDisk).toHaveBeenCalledTimes(1);
       expect(respond).toHaveBeenCalledWith(
         false,
         undefined,
