@@ -421,20 +421,23 @@ export async function handleBlueBubblesWebhookRequest(
       if (replayKey) {
         pendingInboundWebhookReplayKeys.add(replayKey);
       }
-      try {
-        await debouncer.enqueue({ message, target });
-        if (replayKey) {
-          recentInboundWebhookEvents.check(replayKey);
-        }
-      } catch (err) {
-        target.runtime.error?.(
-          `[${target.account.accountId}] BlueBubbles webhook failed: ${String(err)}`,
-        );
-      } finally {
-        if (replayKey) {
-          pendingInboundWebhookReplayKeys.delete(replayKey);
-        }
-      }
+      void debouncer
+        .enqueue({ message, target })
+        .then(() => {
+          if (replayKey) {
+            recentInboundWebhookEvents.check(replayKey);
+          }
+        })
+        .catch((err) => {
+          target.runtime.error?.(
+            `[${target.account.accountId}] BlueBubbles webhook failed: ${String(err)}`,
+          );
+        })
+        .finally(() => {
+          if (replayKey) {
+            pendingInboundWebhookReplayKeys.delete(replayKey);
+          }
+        });
     }
 
     res.statusCode = 200;

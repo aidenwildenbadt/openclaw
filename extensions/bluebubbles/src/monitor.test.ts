@@ -1276,6 +1276,62 @@ describe("BlueBubbles webhook monitor", () => {
       expect(mockDispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
     });
 
+    it("returns webhook 200 before inbound debounce flush settles", async () => {
+      const account = createMockAccount({ dmPolicy: "open" });
+      const config: OpenClawConfig = {};
+      const core = createMockRuntime();
+      let releaseEnqueue: (() => void) | undefined;
+      const enqueueSettled = new Promise<void>((resolve) => {
+        releaseEnqueue = resolve;
+      });
+      // oxlint-disable-next-line typescript/no-explicit-any
+      core.channel.debounce.createInboundDebouncer = vi.fn((params: any) => ({
+        // oxlint-disable-next-line typescript/no-explicit-any
+        enqueue: vi.fn(async (item: any) => {
+          await enqueueSettled;
+          await params.onFlush([item]);
+        }),
+        flushKey: vi.fn(async () => undefined),
+      })) as unknown as PluginRuntime["channel"]["debounce"]["createInboundDebouncer"];
+      setBlueBubblesRuntime(core);
+
+      unregister = registerBlueBubblesWebhookTarget({
+        account,
+        config,
+        runtime: { log: vi.fn(), error: vi.fn() },
+        core,
+        path: "/bluebubbles-webhook",
+      });
+
+      const req = createMockRequest("POST", "/bluebubbles-webhook", {
+        type: "new-message",
+        data: {
+          text: "defer enqueue flush",
+          handle: { address: "+15551234567" },
+          isGroup: false,
+          isFromMe: false,
+          guid: "defer-flush-1",
+          chatGuid: "iMessage;-;+15551234567",
+          date: Date.now(),
+        },
+      });
+      const res = createMockResponse();
+      const requestPromise = handleBlueBubblesWebhookRequest(req, res);
+
+      await flushAsync();
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toBe("ok");
+      expect(mockDispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(0);
+
+      if (!releaseEnqueue) {
+        throw new Error("expected enqueue release hook");
+      }
+      releaseEnqueue();
+      await requestPromise;
+      await flushAsync();
+      expect(mockDispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    });
+
     it("does not drop updated-message replay when attachment identity changes", async () => {
       const account = createMockAccount({ dmPolicy: "open" });
       const config: OpenClawConfig = {};
