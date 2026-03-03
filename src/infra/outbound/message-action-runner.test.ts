@@ -500,7 +500,7 @@ describe("runMessageAction context isolation", () => {
     });
   });
 
-  it("falls back to tool-context provider when multi-target remap channel is a channel id", async () => {
+  it("rejects explicit channel ids for multi-target remap when channel is unknown", async () => {
     await withSandbox(async (workspaceDir) => {
       await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });
       await fs.writeFile(
@@ -531,24 +531,19 @@ describe("runMessageAction context isolation", () => {
         },
       } as OpenClawConfig;
 
-      const result = await runDrySend({
-        cfg,
-        actionParams: {
-          channel: "C12345678",
-          targets: ["U11111111", "U22222222"],
-          message: "hi",
-        },
-        toolContext: {
-          currentChannelProvider: "slack",
-        },
-      });
-
-      expect(result.kind).toBe("send");
-      if (result.kind !== "send") {
-        throw new Error("expected send result");
-      }
-      expect(result.channel).toBe("slack");
-      expect(result.to).toMatch(/C76543210/);
+      await expect(
+        runDrySend({
+          cfg,
+          actionParams: {
+            channel: "C12345678",
+            targets: ["U11111111", "U22222222"],
+            message: "hi",
+          },
+          toolContext: {
+            currentChannelProvider: "slack",
+          },
+        }),
+      ).rejects.toThrow(/Unknown channel "C12345678"/i);
     });
   });
 
@@ -730,6 +725,33 @@ describe("runMessageAction context isolation", () => {
           },
         }),
       ).rejects.toThrow(/Unknown channel "IMesssage"/i);
+    });
+  });
+
+  it("rejects unknown explicit non-alias channel token in multi-target remap", async () => {
+    await withSandbox(async (workspaceDir) => {
+      const cfg = {
+        channels: {
+          imessage: { enabled: true },
+          bluebubbles: { enabled: true },
+        },
+        agents: {
+          defaults: {
+            workspace: workspaceDir,
+          },
+        },
+      } as OpenClawConfig;
+
+      await expect(
+        runDrySend({
+          cfg,
+          actionParams: {
+            channel: "C12345678",
+            targets: ["+14155592088", "+14255320947"],
+            message: "hi",
+          },
+        }),
+      ).rejects.toThrow(/Unknown channel "C12345678"/i);
     });
   });
 

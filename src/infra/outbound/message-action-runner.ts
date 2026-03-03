@@ -186,19 +186,6 @@ function readTrimmedTargetsParam(params: Record<string, unknown>): string[] {
   return targets;
 }
 
-function looksLikeChannelAliasToken(value: string): boolean {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return false;
-  }
-  // Preserve channel-id fallback behavior (for example Slack C123...), which should
-  // continue resolving through tool-context provider hints instead of unknown-channel errors.
-  if (/^[a-z]\d{5,}$/i.test(trimmed)) {
-    return false;
-  }
-  return /^[a-z]{2}[a-z0-9_-]*$/i.test(trimmed);
-}
-
 function normalizeRoutingHandle(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -354,11 +341,7 @@ async function normalizeTargetsParamForAction(params: {
       normalizedChannelHint && isDeliverableMessageChannel(normalizedChannelHint)
         ? normalizedChannelHint
         : undefined;
-    if (
-      explicitChannelRaw &&
-      !explicitChannelHint &&
-      looksLikeChannelAliasToken(explicitChannelRaw)
-    ) {
+    if (explicitChannelRaw && !explicitChannelHint) {
       throw new Error(
         `Unknown channel "${explicitChannelRaw}" for multi-target ${params.action}. Provide a configured channel or use target for one destination.`,
       );
