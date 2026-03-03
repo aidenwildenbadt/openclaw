@@ -379,7 +379,7 @@ function extractChatContext(message: Record<string, unknown>): {
       { record: message, key: "group" },
     ]);
   const explicitIsGroup =
-    explicitIsGroupCandidate?.source === "string" && !hasConcreteChatIdentity
+    explicitIsGroupCandidate?.source !== "boolean" && !hasConcreteChatIdentity
       ? undefined
       : explicitIsGroupCandidate?.value;
   const isGroup =
