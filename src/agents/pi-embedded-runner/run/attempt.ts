@@ -619,11 +619,30 @@ export function recoverOrphanedUserMessagesForPrompt(params: {
     };
   }
 
-  const carryForwardPrompt = orphanedUserCarryForward.toReversed().join("\n\n");
+  const normalizedPrompt = params.prompt.trim();
+  const carryForwardEntries = orphanedUserCarryForward.toReversed().filter((entry) => {
+    const normalizedEntry = entry.trim();
+    if (!normalizedEntry) {
+      return false;
+    }
+    if (!normalizedPrompt) {
+      return true;
+    }
+    // Avoid duplicate "<user text>\n\n<user text>" prompts on transient retries.
+    return normalizedEntry !== normalizedPrompt;
+  });
+  if (carryForwardEntries.length === 0) {
+    return {
+      prompt: params.prompt,
+      recoveredCount: orphanedUserCount,
+      mergedCount: 0,
+    };
+  }
+  const carryForwardPrompt = carryForwardEntries.join("\n\n");
   return {
     prompt: `${carryForwardPrompt}\n\n${params.prompt}`,
     recoveredCount: orphanedUserCount,
-    mergedCount: orphanedUserCarryForward.length,
+    mergedCount: carryForwardEntries.length,
   };
 }
 

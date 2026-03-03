@@ -149,13 +149,7 @@ function hasExplicitChatContext(message: NormalizedWebhookMessage): boolean {
   const hasChatGuid = Boolean(message.chatGuid?.trim());
   const hasChatIdentifier = Boolean(message.chatIdentifier?.trim());
   const hasChatId = typeof message.chatId === "number" && Number.isFinite(message.chatId);
-  return Boolean(
-    hasChatGuid ||
-    hasChatIdentifier ||
-    hasChatId ||
-    message.hasConversationLabel ||
-    message.hasExplicitGroupChatFlag,
-  );
+  return Boolean(hasChatGuid || hasChatIdentifier || hasChatId || message.hasConversationLabel);
 }
 
 function shouldDropMentionOnlyDirectPayload(message: NormalizedWebhookMessage): boolean {

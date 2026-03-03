@@ -230,6 +230,39 @@ describe("recoverOrphanedUserMessagesForPrompt", () => {
     });
     expect(replaceMessages).not.toHaveBeenCalled();
   });
+
+  it("does not duplicate prompt when orphaned carry-forward matches current prompt", () => {
+    const sessionManager = createSessionManager(
+      [
+        {
+          id: "assistant",
+          type: "message",
+          message: { role: "assistant", content: [{ type: "text", text: "seed assistant" }] },
+        },
+        {
+          id: "u1",
+          type: "message",
+          parentId: "assistant",
+          message: { role: "user", content: [{ type: "text", text: "retry me" }] },
+        },
+      ],
+      "u1",
+    );
+
+    const replaceMessages = vi.fn();
+    const result = recoverOrphanedUserMessagesForPrompt({
+      sessionManager,
+      prompt: "retry me",
+      replaceMessages,
+    });
+
+    expect(result).toEqual({
+      prompt: "retry me",
+      recoveredCount: 1,
+      mergedCount: 0,
+    });
+    expect(replaceMessages).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("resolveAttemptFsWorkspaceOnly", () => {
