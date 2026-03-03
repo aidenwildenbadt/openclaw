@@ -178,6 +178,29 @@ describe("normalizeWebhookMessage", () => {
     expect(result?.chatId).toBeUndefined();
   });
 
+  it("preserves nested legacy non-group flag as explicit non-group metadata", () => {
+    const result = normalizeWebhookMessage({
+      type: "new-message",
+      data: {
+        guid: "msg-nested-chat-group-false",
+        text: "hello",
+        handle: { address: "+15551234567" },
+        conversation_label: "Group id:Unknown",
+        chat: { group: false },
+        isFromMe: false,
+      },
+    });
+
+    expect(result).not.toBeNull();
+    expect(result?.isGroup).toBe(false);
+    expect(result?.explicitGroupChatHint).toBe(false);
+    expect(result?.explicitIsGroupHint).toBe(false);
+    expect(result?.hasExplicitGroupChatFlag).toBe(true);
+    expect(result?.chatGuid).toBeUndefined();
+    expect(result?.chatIdentifier).toBeUndefined();
+    expect(result?.chatId).toBeUndefined();
+  });
+
   it("does not treat DM conversation labels as group chat GUIDs", () => {
     const result = normalizeWebhookMessage({
       type: "new-message",

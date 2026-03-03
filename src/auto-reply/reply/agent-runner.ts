@@ -233,9 +233,8 @@ export async function runReplyAgent(params: {
     const steered = queueEmbeddedPiMessage(followupRun.run.sessionId, followupRun.prompt);
     if (steered && !shouldFollowup) {
       await touchActiveSessionEntry();
-      const busyNotice = await maybeBuildBusyQueueNotice();
       typing.cleanup();
-      return busyNotice;
+      return undefined;
     }
   }
 

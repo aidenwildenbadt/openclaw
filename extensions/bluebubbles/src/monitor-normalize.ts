@@ -366,8 +366,10 @@ function extractChatContext(message: Record<string, unknown>): {
     { record: message, key: "group" },
     { record: chat, key: "isGroupChat" },
     { record: chat, key: "is_group_chat" },
+    { record: chat, key: "group" },
     { record: chatFromList, key: "isGroupChat" },
     { record: chatFromList, key: "is_group_chat" },
+    { record: chatFromList, key: "group" },
   ]);
   const explicitIsGroupCandidate =
     explicitGroupChatHint ??
@@ -379,6 +381,8 @@ function extractChatContext(message: Record<string, unknown>): {
       { record: chatFromList, key: "isGroup" },
       { record: chatFromList, key: "is_group" },
       { record: message, key: "group" },
+      { record: chat, key: "group" },
+      { record: chatFromList, key: "group" },
     ]);
   const explicitIsGroup =
     !hasConcreteChatIdentity && explicitIsGroupCandidate?.value !== false

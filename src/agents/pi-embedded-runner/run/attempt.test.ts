@@ -113,6 +113,10 @@ describe("recoverOrphanedUserMessagesForPrompt", () => {
     message?: AgentMessage;
   };
 
+  function agentMessage(value: Record<string, unknown>): AgentMessage {
+    return value as unknown as AgentMessage;
+  }
+
   function createSessionManager(entries: LeafEntry[], leafId: string | null) {
     const byId = new Map(entries.map((entry) => [entry.id, entry]));
     let currentLeafId = leafId;
@@ -152,19 +156,28 @@ describe("recoverOrphanedUserMessagesForPrompt", () => {
         {
           id: "assistant",
           type: "message",
-          message: { role: "assistant", content: [{ type: "text", text: "seed assistant" }] },
+          message: agentMessage({
+            role: "assistant",
+            content: [{ type: "text", text: "seed assistant" }],
+          }),
         },
         {
           id: "u1",
           type: "message",
           parentId: "assistant",
-          message: { role: "user", content: [{ type: "text", text: "first orphaned message" }] },
+          message: agentMessage({
+            role: "user",
+            content: [{ type: "text", text: "first orphaned message" }],
+          }),
         },
         {
           id: "u2",
           type: "message",
           parentId: "u1",
-          message: { role: "user", content: [{ type: "text", text: "second orphaned message" }] },
+          message: agentMessage({
+            role: "user",
+            content: [{ type: "text", text: "second orphaned message" }],
+          }),
         },
       ],
       "u2",
@@ -196,16 +209,19 @@ describe("recoverOrphanedUserMessagesForPrompt", () => {
         {
           id: "assistant",
           type: "message",
-          message: { role: "assistant", content: [{ type: "text", text: "seed assistant" }] },
+          message: agentMessage({
+            role: "assistant",
+            content: [{ type: "text", text: "seed assistant" }],
+          }),
         },
         {
           id: "u1",
           type: "message",
           parentId: "assistant",
-          message: {
+          message: agentMessage({
             role: "user",
             content: [{ type: "image", data: "abc", mimeType: "image/png" }],
-          },
+          }),
         },
       ],
       "u1",
@@ -230,7 +246,10 @@ describe("recoverOrphanedUserMessagesForPrompt", () => {
         {
           id: "assistant",
           type: "message",
-          message: { role: "assistant", content: [{ type: "text", text: "seed assistant" }] },
+          message: agentMessage({
+            role: "assistant",
+            content: [{ type: "text", text: "seed assistant" }],
+          }),
         },
       ],
       "assistant",
@@ -257,13 +276,19 @@ describe("recoverOrphanedUserMessagesForPrompt", () => {
         {
           id: "assistant",
           type: "message",
-          message: { role: "assistant", content: [{ type: "text", text: "seed assistant" }] },
+          message: agentMessage({
+            role: "assistant",
+            content: [{ type: "text", text: "seed assistant" }],
+          }),
         },
         {
           id: "u1",
           type: "message",
           parentId: "assistant",
-          message: { role: "user", content: [{ type: "text", text: "retry me" }] },
+          message: agentMessage({
+            role: "user",
+            content: [{ type: "text", text: "retry me" }],
+          }),
         },
       ],
       "u1",
@@ -290,19 +315,28 @@ describe("recoverOrphanedUserMessagesForPrompt", () => {
         {
           id: "assistant",
           type: "message",
-          message: { role: "assistant", content: [{ type: "text", text: "seed assistant" }] },
+          message: agentMessage({
+            role: "assistant",
+            content: [{ type: "text", text: "seed assistant" }],
+          }),
         },
         {
           id: "u1",
           type: "message",
           parentId: "assistant",
-          message: { role: "user", content: [{ type: "text", text: "retry me" }] },
+          message: agentMessage({
+            role: "user",
+            content: [{ type: "text", text: "retry me" }],
+          }),
         },
         {
           id: "u2",
           type: "message",
           parentId: "u1",
-          message: { role: "user", content: [{ type: "text", text: "retry me" }] },
+          message: agentMessage({
+            role: "user",
+            content: [{ type: "text", text: "retry me" }],
+          }),
         },
       ],
       "u2",
@@ -327,13 +361,19 @@ describe("recoverOrphanedUserMessagesForPrompt", () => {
         {
           id: "assistant",
           type: "message",
-          message: { role: "assistant", content: [{ type: "text", text: "seed assistant" }] },
+          message: agentMessage({
+            role: "assistant",
+            content: [{ type: "text", text: "seed assistant" }],
+          }),
         },
         {
           id: "u1",
           type: "message",
           parentId: "assistant",
-          message: { role: "user", content: [{ type: "text", text: "retry me" }] },
+          message: agentMessage({
+            role: "user",
+            content: [{ type: "text", text: "retry me" }],
+          }),
         },
       ],
       "u1",
