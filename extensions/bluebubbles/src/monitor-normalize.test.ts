@@ -114,6 +114,26 @@ describe("normalizeWebhookMessage", () => {
     expect(result?.chatId).toBeUndefined();
   });
 
+  it("does not force group routing from boolean group hints without chat identity", () => {
+    const result = normalizeWebhookMessage({
+      type: "new-message",
+      data: {
+        guid: "msg-1",
+        text: "hello",
+        handle: { address: "+15551234567" },
+        is_group_chat: true,
+        isFromMe: false,
+      },
+    });
+
+    expect(result).not.toBeNull();
+    expect(result?.isGroup).toBe(false);
+    expect(result?.explicitIsGroupHint).toBeUndefined();
+    expect(result?.chatGuid).toBeUndefined();
+    expect(result?.chatIdentifier).toBeUndefined();
+    expect(result?.chatId).toBeUndefined();
+  });
+
   it("does not treat DM conversation labels as group chat GUIDs", () => {
     const result = normalizeWebhookMessage({
       type: "new-message",
