@@ -1950,6 +1950,60 @@ describe("BlueBubbles webhook monitor", () => {
       }
     });
 
+    it("does not drop updated-message events that differ only by edit metadata", async () => {
+      const account = createMockAccount({ dmPolicy: "open" });
+      const config: OpenClawConfig = {};
+      const core = createMockRuntime();
+      setBlueBubblesRuntime(core);
+
+      unregister = registerBlueBubblesWebhookTarget({
+        account,
+        config,
+        runtime: { log: vi.fn(), error: vi.fn() },
+        core,
+        path: "/bluebubbles-webhook",
+      });
+
+      await handleBlueBubblesWebhookRequest(
+        createMockRequest("POST", "/bluebubbles-webhook", {
+          type: "updated-message",
+          data: {
+            text: "same body",
+            handle: { address: "+15551234567" },
+            isGroup: false,
+            isFromMe: false,
+            guid: "edited-meta-msg-1",
+            chatGuid: "iMessage;-;+15551234567",
+            itemType: 0,
+            dateEdited: 1710000000000,
+            date: Date.now(),
+          },
+        }),
+        createMockResponse(),
+      );
+
+      await handleBlueBubblesWebhookRequest(
+        createMockRequest("POST", "/bluebubbles-webhook", {
+          type: "updated-message",
+          data: {
+            text: "same body",
+            handle: { address: "+15551234567" },
+            isGroup: false,
+            isFromMe: false,
+            guid: "edited-meta-msg-1",
+            chatGuid: "iMessage;-;+15551234567",
+            itemType: 0,
+            dateEdited: 1710000001234,
+            date: Date.now(),
+          },
+        }),
+        createMockResponse(),
+      );
+
+      await flushAsync();
+      expect(mockDispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(2);
+    });
+
     it("processes updated-message text edits without explicit edit metadata when text changes", async () => {
       const account = createMockAccount({ dmPolicy: "open" });
       const config: OpenClawConfig = {};
