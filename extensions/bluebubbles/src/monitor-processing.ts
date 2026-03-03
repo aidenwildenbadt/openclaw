@@ -96,6 +96,19 @@ type ScopedPairingAccessCompat = {
   ) => ReturnType<BlueBubblesCoreRuntime["channel"]["pairing"]["upsertPairingRequest"]>;
 };
 
+function normalizePairingAccountIdCompat(value: string | undefined | null): string {
+  const normalizeAccountId = (
+    pluginSdk as {
+      normalizeAccountId?: (raw: string | undefined | null) => string;
+    }
+  ).normalizeAccountId;
+  if (typeof normalizeAccountId === "function") {
+    return normalizeAccountId(value);
+  }
+  const trimmed = (value ?? "").trim().toLowerCase();
+  return trimmed || "default";
+}
+
 function createScopedPairingAccessCompat(
   params: ScopedPairingAccessArgs,
 ): ScopedPairingAccessCompat {
@@ -110,7 +123,7 @@ function createScopedPairingAccessCompat(
   }
 
   // Compatibility fallback for older plugin-sdk builds missing createScopedPairingAccess.
-  const resolvedAccountId = String(params.accountId || "default");
+  const resolvedAccountId = normalizePairingAccountIdCompat(params.accountId);
   return {
     accountId: resolvedAccountId,
     readAllowFromStore: () =>
@@ -121,7 +134,7 @@ function createScopedPairingAccessCompat(
     readStoreForDmPolicy: (provider: PairingReadInput["channel"], accountId: string) =>
       params.core.channel.pairing.readAllowFromStore({
         channel: provider,
-        accountId: String(accountId || "default"),
+        accountId: normalizePairingAccountIdCompat(accountId),
       }),
     upsertPairingRequest: (input: Omit<PairingUpsertInput, "channel" | "accountId">) =>
       params.core.channel.pairing.upsertPairingRequest({
