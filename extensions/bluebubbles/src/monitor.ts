@@ -163,7 +163,7 @@ function shouldDropMentionOnlyDirectPayload(message: NormalizedWebhookMessage): 
   const hasAmbiguousGroupHintWithoutChatContext =
     message.hasConversationLabel &&
     message.hasExplicitGroupChatFlag &&
-    message.explicitGroupChatHint === true &&
+    message.explicitGroupChatHint !== false &&
     !hasResolvedChatHandle;
   if (hasAmbiguousGroupHintWithoutChatContext) {
     return true;
