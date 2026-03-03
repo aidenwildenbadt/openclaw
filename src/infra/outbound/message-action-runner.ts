@@ -187,7 +187,16 @@ function readTrimmedTargetsParam(params: Record<string, unknown>): string[] {
 }
 
 function looksLikeChannelAliasToken(value: string): boolean {
-  return /^[a-z]{2}[a-z0-9_-]*$/.test(value);
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+  // Preserve channel-id fallback behavior (for example Slack C123...), which should
+  // continue resolving through tool-context provider hints instead of unknown-channel errors.
+  if (/^[a-z]\d{5,}$/i.test(trimmed)) {
+    return false;
+  }
+  return /^[a-z]{2}[a-z0-9_-]*$/i.test(trimmed);
 }
 
 function normalizeRoutingHandle(value: string): string {

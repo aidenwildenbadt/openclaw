@@ -706,6 +706,33 @@ describe("runMessageAction context isolation", () => {
     });
   });
 
+  it("rejects mixed-case unknown explicit channel alias in multi-target remap", async () => {
+    await withSandbox(async (workspaceDir) => {
+      const cfg = {
+        channels: {
+          imessage: { enabled: true },
+          bluebubbles: { enabled: true },
+        },
+        agents: {
+          defaults: {
+            workspace: workspaceDir,
+          },
+        },
+      } as OpenClawConfig;
+
+      await expect(
+        runDrySend({
+          cfg,
+          actionParams: {
+            channel: "IMesssage",
+            targets: ["+14155592088", "+14255320947"],
+            message: "hi",
+          },
+        }),
+      ).rejects.toThrow(/Unknown channel "IMesssage"/i);
+    });
+  });
+
   it("does not implicitly pick bluebubbles mapping when channel selection is ambiguous", async () => {
     await withSandbox(async (workspaceDir) => {
       const imessagePlugin = createIMessageTestPlugin();
