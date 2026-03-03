@@ -329,6 +329,63 @@ describe("runMessageAction context isolation", () => {
     });
   });
 
+  it("resolves default workspace path aliases before routing map lookup", async () => {
+    await withSandbox(async (sandboxDir) => {
+      const previousHome = process.env.HOME;
+      const workspaceDir = path.join(sandboxDir, "workspace-main");
+      await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });
+      await fs.writeFile(
+        path.join(workspaceDir, "memory", "routing-targets.json"),
+        JSON.stringify({
+          groups: {
+            kevin_fernanda: {
+              member_handles: ["+14155592088", "+14255320947"],
+              channels: {
+                imessage: "chat_id:42",
+              },
+            },
+          },
+        }),
+      );
+
+      process.env.HOME = sandboxDir;
+      try {
+        const cfg = {
+          channels: {
+            imessage: { enabled: true },
+          },
+          agents: {
+            defaults: {
+              workspace: "~/workspace-main",
+            },
+          },
+        } as OpenClawConfig;
+
+        const result = await runDrySend({
+          cfg,
+          actionParams: {
+            channel: "imessage",
+            targets: ["+14155592088", "+14255320947"],
+            message: "hi",
+          },
+        });
+
+        expect(result.kind).toBe("send");
+        if (result.kind !== "send") {
+          throw new Error("expected send result");
+        }
+        expect(result.channel).toBe("imessage");
+        expect(result.to).toBe("chat_id:42");
+      } finally {
+        if (previousHome === undefined) {
+          delete process.env.HOME;
+        } else {
+          process.env.HOME = previousHome;
+        }
+      }
+    });
+  });
+
   it("uses tool-context channel provider when remapping multi-target send without explicit channel", async () => {
     await withSandbox(async (workspaceDir) => {
       await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });

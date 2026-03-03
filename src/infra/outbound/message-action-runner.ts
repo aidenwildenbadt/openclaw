@@ -1,7 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
-import { resolveAgentWorkspaceDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
+import {
+  resolveAgentWorkspaceDir,
+  resolveDefaultAgentId,
+  resolveSessionAgentId,
+} from "../../agents/agent-scope.js";
 import {
   readNumberParam,
   readStringArrayParam,
@@ -906,9 +910,10 @@ export async function runMessageAction(
   parseComponentsParam(params);
 
   const action = input.action;
-  const routingWorkspace = resolvedAgentId
-    ? resolveAgentWorkspaceDir(cfg, resolvedAgentId)
-    : cfg.agents?.defaults?.workspace?.trim();
+  const routingWorkspace = resolveAgentWorkspaceDir(
+    cfg,
+    resolvedAgentId ?? resolveDefaultAgentId(cfg),
+  );
   normalizeTargetsParamForAction({
     action,
     args: params,
