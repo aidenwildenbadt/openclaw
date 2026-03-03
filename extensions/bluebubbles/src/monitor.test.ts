@@ -1221,6 +1221,61 @@ describe("BlueBubbles webhook monitor", () => {
       expect(mockDispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
     });
 
+    it("does not mark replay as seen when enqueue fails", async () => {
+      const account = createMockAccount({ dmPolicy: "open" });
+      const config: OpenClawConfig = {};
+      const core = createMockRuntime();
+      // oxlint-disable-next-line typescript/no-explicit-any
+      core.channel.debounce.createInboundDebouncer = vi.fn((params: any) => {
+        let enqueueCount = 0;
+        return {
+          // oxlint-disable-next-line typescript/no-explicit-any
+          enqueue: vi.fn(async (item: any) => {
+            enqueueCount += 1;
+            if (enqueueCount === 1) {
+              throw new Error("synthetic enqueue failure");
+            }
+            await params.onFlush([item]);
+          }),
+          flushKey: vi.fn(async () => undefined),
+        };
+      }) as unknown as PluginRuntime["channel"]["debounce"]["createInboundDebouncer"];
+      setBlueBubblesRuntime(core);
+
+      unregister = registerBlueBubblesWebhookTarget({
+        account,
+        config,
+        runtime: { log: vi.fn(), error: vi.fn() },
+        core,
+        path: "/bluebubbles-webhook",
+      });
+
+      const payload = {
+        type: "new-message",
+        data: {
+          text: "retry me",
+          handle: { address: "+15551234567" },
+          isGroup: false,
+          isFromMe: false,
+          guid: "dup-msg-enqueue-fail-1",
+          chatGuid: "iMessage;-;+15551234567",
+          date: Date.now(),
+        },
+      };
+
+      await handleBlueBubblesWebhookRequest(
+        createMockRequest("POST", "/bluebubbles-webhook", payload),
+        createMockResponse(),
+      );
+      await handleBlueBubblesWebhookRequest(
+        createMockRequest("POST", "/bluebubbles-webhook", payload),
+        createMockResponse(),
+      );
+
+      await flushAsync();
+      expect(mockDispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    });
+
     it("does not drop updated-message replay when attachment identity changes", async () => {
       const account = createMockAccount({ dmPolicy: "open" });
       const config: OpenClawConfig = {};

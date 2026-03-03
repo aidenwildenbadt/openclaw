@@ -40,6 +40,7 @@ const recentInboundWebhookEvents = createDedupeCache({
   ttlMs: BLUEBUBBLES_WEBHOOK_REPLAY_WINDOW_MS,
   maxSize: BLUEBUBBLES_WEBHOOK_REPLAY_CACHE_MAX_SIZE,
 });
+const pendingInboundWebhookReplayKeys = new Set<string>();
 
 export function registerBlueBubblesWebhookTarget(target: WebhookTarget): () => void {
   const registered = registerWebhookTargetWithPluginRoute({
@@ -399,7 +400,11 @@ export async function handleBlueBubblesWebhookRequest(
       });
     } else if (message) {
       const replayKey = buildInboundReplayKey({ target, message });
-      if (replayKey && recentInboundWebhookEvents.check(replayKey)) {
+      if (
+        replayKey &&
+        (pendingInboundWebhookReplayKeys.has(replayKey) ||
+          recentInboundWebhookEvents.peek(replayKey))
+      ) {
         logVerbose(
           target.core,
           target.runtime,
@@ -413,11 +418,23 @@ export async function handleBlueBubblesWebhookRequest(
       // Route messages through debouncer to coalesce rapid-fire events
       // (e.g., text message + URL balloon arriving as separate webhooks)
       const debouncer = debounceRegistry.getOrCreateDebouncer(target);
-      debouncer.enqueue({ message, target }).catch((err) => {
+      if (replayKey) {
+        pendingInboundWebhookReplayKeys.add(replayKey);
+      }
+      try {
+        await debouncer.enqueue({ message, target });
+        if (replayKey) {
+          recentInboundWebhookEvents.check(replayKey);
+        }
+      } catch (err) {
         target.runtime.error?.(
           `[${target.account.accountId}] BlueBubbles webhook failed: ${String(err)}`,
         );
-      });
+      } finally {
+        if (replayKey) {
+          pendingInboundWebhookReplayKeys.delete(replayKey);
+        }
+      }
     }
 
     res.statusCode = 200;
@@ -497,6 +514,7 @@ export async function monitorBlueBubblesProvider(
 
 function _resetBlueBubblesWebhookReplayState(): void {
   recentInboundWebhookEvents.clear();
+  pendingInboundWebhookReplayKeys.clear();
 }
 
 export {
