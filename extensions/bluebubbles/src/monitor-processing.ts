@@ -1,7 +1,7 @@
+import * as pluginSdk from "openclaw/plugin-sdk";
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import {
   DM_GROUP_ACCESS_REASON,
-  createScopedPairingAccess,
   createReplyPrefixOptions,
   evictOldHistoryKeys,
   logAckFailure,
@@ -75,11 +75,35 @@ type PairingUpsertInput = Parameters<
   BlueBubblesCoreRuntime["channel"]["pairing"]["upsertPairingRequest"]
 >[0];
 
-function createScopedPairingAccessCompat(params: {
+type ScopedPairingAccessArgs = {
   core: BlueBubblesCoreRuntime;
   channel: "bluebubbles";
   accountId: string;
-}) {
+};
+
+type ScopedPairingAccessCompat = {
+  accountId: string;
+  readAllowFromStore: () => ReturnType<
+    BlueBubblesCoreRuntime["channel"]["pairing"]["readAllowFromStore"]
+  >;
+  readStoreForDmPolicy: (
+    provider: PairingReadInput["channel"],
+    accountId: string,
+  ) => ReturnType<BlueBubblesCoreRuntime["channel"]["pairing"]["readAllowFromStore"]>;
+  upsertPairingRequest: (
+    input: Omit<PairingUpsertInput, "channel" | "accountId">,
+  ) => ReturnType<BlueBubblesCoreRuntime["channel"]["pairing"]["upsertPairingRequest"]>;
+};
+
+function createScopedPairingAccessCompat(
+  params: ScopedPairingAccessArgs,
+): ScopedPairingAccessCompat {
+  // Use namespace lookup so older plugin-sdk builds (without this export) still load.
+  const createScopedPairingAccess = (
+    pluginSdk as {
+      createScopedPairingAccess?: (args: ScopedPairingAccessArgs) => ScopedPairingAccessCompat;
+    }
+  ).createScopedPairingAccess;
   if (typeof createScopedPairingAccess === "function") {
     return createScopedPairingAccess(params);
   }

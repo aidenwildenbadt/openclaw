@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bluebubblesPlugin } from "../../../extensions/bluebubbles/src/channel.js";
 import { slackPlugin } from "../../../extensions/slack/src/channel.js";
 import { telegramPlugin } from "../../../extensions/telegram/src/channel.js";
 import { whatsappPlugin } from "../../../extensions/whatsapp/src/channel.js";
@@ -516,6 +517,63 @@ describe("runMessageAction context isolation", () => {
           },
         }),
       ).rejects.toThrow(/single destination/i);
+    });
+  });
+
+  it("accepts legacy chat_guid mapping for explicit bluebubbles channel hint", async () => {
+    await withSandbox(async (workspaceDir) => {
+      setActivePluginRegistry(
+        createTestRegistry([
+          {
+            pluginId: "bluebubbles",
+            source: "test",
+            plugin: bluebubblesPlugin,
+          },
+        ]),
+      );
+      await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });
+      await fs.writeFile(
+        path.join(workspaceDir, "memory", "routing-targets.json"),
+        JSON.stringify({
+          groups: {
+            kevin_fernanda: {
+              member_handles: ["+14155592088", "+14255320947"],
+              chat_guid: "iMessage;-;legacy-abc123",
+            },
+          },
+        }),
+      );
+
+      const cfg = {
+        channels: {
+          bluebubbles: {
+            enabled: true,
+            serverUrl: "http://localhost:1234",
+            password: "test-password",
+          },
+        },
+        agents: {
+          defaults: {
+            workspace: workspaceDir,
+          },
+        },
+      } as OpenClawConfig;
+
+      const result = await runDrySend({
+        cfg,
+        actionParams: {
+          channel: "bluebubbles",
+          targets: ["+14155592088", "+14255320947"],
+          message: "hi",
+        },
+      });
+
+      expect(result.kind).toBe("send");
+      if (result.kind !== "send") {
+        throw new Error("expected send result");
+      }
+      expect(result.channel).toBe("bluebubbles");
+      expect(result.to).toBe("legacy-abc123");
     });
   });
 

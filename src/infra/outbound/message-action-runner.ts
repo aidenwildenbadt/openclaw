@@ -276,9 +276,10 @@ function resolveKnownGroupTargetFromRoutingMap(params: {
     if (hintedTarget) {
       return { channel: channelHint!, target: hintedTarget };
     }
-    if (channelHint) {
-      // Preserve explicit channel intent. If the mapped group lacks this channel,
+    if (channelHint && channelHint !== "bluebubbles") {
+      // Preserve explicit non-BlueBubbles channel intent. If the mapped group lacks this channel,
       // keep searching for another exact group match instead of silently rerouting.
+      // BlueBubbles still supports chat_guid legacy entries without channels.bluebubbles.
       continue;
     }
     const bluebubblesTarget =
