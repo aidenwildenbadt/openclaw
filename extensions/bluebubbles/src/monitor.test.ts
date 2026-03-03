@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPluginRuntimeMock } from "../../test-utils/plugin-runtime-mock.js";
 import type { ResolvedBlueBubblesAccount } from "./accounts.js";
 import { fetchBlueBubblesHistory } from "./history.js";
+import { resolveReplyContextFromCache } from "./monitor-reply-cache.js";
 import {
   handleBlueBubblesWebhookRequest,
   registerBlueBubblesWebhookTarget,
@@ -1754,6 +1755,63 @@ describe("BlueBubbles webhook monitor", () => {
 
       await flushAsync();
       expect(mockDispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    });
+
+    it("ignores empty updated-message payloads when associatedMessageType is zero", async () => {
+      const account = createMockAccount({ dmPolicy: "open" });
+      const config: OpenClawConfig = {};
+      const core = createMockRuntime();
+      setBlueBubblesRuntime(core);
+
+      unregister = registerBlueBubblesWebhookTarget({
+        account,
+        config,
+        runtime: { log: vi.fn(), error: vi.fn() },
+        core,
+        path: "/bluebubbles-webhook",
+      });
+
+      await handleBlueBubblesWebhookRequest(
+        createMockRequest("POST", "/bluebubbles-webhook", {
+          type: "new-message",
+          data: {
+            text: "original outbound body",
+            handle: { address: "+15551234567" },
+            isGroup: false,
+            isFromMe: true,
+            guid: "edited-msg-zero-associated-1",
+            chatGuid: "iMessage;-;+15551234567",
+            date: Date.now(),
+          },
+        }),
+        createMockResponse(),
+      );
+
+      await handleBlueBubblesWebhookRequest(
+        createMockRequest("POST", "/bluebubbles-webhook", {
+          type: "updated-message",
+          data: {
+            text: "",
+            handle: { address: "+15551234567" },
+            isGroup: false,
+            isFromMe: true,
+            guid: "edited-msg-zero-associated-1",
+            chatGuid: "iMessage;-;+15551234567",
+            associatedMessageType: 0,
+            date: Date.now(),
+          },
+        }),
+        createMockResponse(),
+      );
+
+      await flushAsync();
+
+      const cached = resolveReplyContextFromCache({
+        accountId: "default",
+        replyToId: "edited-msg-zero-associated-1",
+        chatGuid: "iMessage;-;+15551234567",
+      });
+      expect(cached?.body).toBe("original outbound body");
     });
 
     it("returns 200 for updated-message payloads that cannot be normalized", async () => {
