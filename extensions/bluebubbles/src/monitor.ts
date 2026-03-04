@@ -105,6 +105,29 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function shouldDropUnresolvedDirectMirrorMetadata(payload: Record<string, unknown>): boolean {
+  const data = asRecord(payload.data) ?? payload;
+  const message = asRecord((asRecord(data)?.message as unknown) ?? data);
+  if (!message) {
+    return false;
+  }
+  const conversationLabelRaw =
+    typeof message.conversationLabel === "string"
+      ? message.conversationLabel
+      : typeof message.conversation_label === "string"
+        ? message.conversation_label
+        : "";
+  const conversationLabel = conversationLabelRaw.trim().toLowerCase();
+  const unknownConversationLabel =
+    conversationLabel === "group id:unknown" || conversationLabel.startsWith("group id:unknown");
+  const hasMessageIdFull =
+    typeof message.messageIdFull === "string" || typeof message.message_id_full === "string";
+  const groupHintRaw = message.isGroupChat ?? message.is_group_chat;
+  const unknownGroupHint =
+    typeof groupHintRaw === "string" && groupHintRaw.trim().toLowerCase() === "unknown";
+  return unknownConversationLabel && hasMessageIdFull && unknownGroupHint;
+}
+
 function maskSecret(value: string): string {
   if (value.length <= 6) {
     return "***";
@@ -273,6 +296,54 @@ function buildInboundReplayKey(params: {
   ].join("|");
 }
 
+function hasExplicitChatContext(message: NormalizedWebhookMessage): boolean {
+  const hasChatGuid = Boolean(message.chatGuid?.trim());
+  const hasChatIdentifier = Boolean(message.chatIdentifier?.trim());
+  const hasChatId = typeof message.chatId === "number" && Number.isFinite(message.chatId);
+  return Boolean(hasChatGuid || hasChatIdentifier || hasChatId);
+}
+
+function shouldDropMentionOnlyDirectPayload(message: NormalizedWebhookMessage): boolean {
+  if (message.isGroup) {
+    return false;
+  }
+  const hasExplicitNonGroupHint =
+    message.explicitGroupChatHint === false || message.explicitIsGroupHint === false;
+  const hasResolvedChatHandle =
+    Boolean(message.chatGuid?.trim()) ||
+    Boolean(message.chatIdentifier?.trim()) ||
+    (typeof message.chatId === "number" && Number.isFinite(message.chatId));
+  const hasAmbiguousGroupHintWithoutChatContext =
+    message.hasConversationLabel &&
+    message.hasExplicitGroupChatFlag &&
+    !hasExplicitNonGroupHint &&
+    !hasResolvedChatHandle;
+  if (hasAmbiguousGroupHintWithoutChatContext) {
+    return true;
+  }
+  if (message.explicitWasMentioned !== true) {
+    return false;
+  }
+  if (
+    message.hasConversationLabel &&
+    message.hasExplicitGroupChatFlag &&
+    !hasExplicitNonGroupHint &&
+    message.hasMessageIdFull &&
+    !message.messageId?.trim()
+  ) {
+    return true;
+  }
+  if (
+    message.hasConversationLabel &&
+    message.hasExplicitGroupChatFlag &&
+    !hasExplicitNonGroupHint &&
+    !hasResolvedChatHandle
+  ) {
+    return true;
+  }
+  return !hasExplicitChatContext(message);
+}
+
 export async function handleBlueBubblesWebhookRequest(
   req: IncomingMessage,
   res: ServerResponse,
@@ -373,6 +444,18 @@ export async function handleBlueBubblesWebhookRequest(
       }
       return true;
     }
+    if (eventType === "new-message" && shouldDropUnresolvedDirectMirrorMetadata(payload)) {
+      if (firstTarget) {
+        logVerbose(
+          firstTarget.core,
+          firstTarget.runtime,
+          "webhook dropped unresolved direct mirror metadata payload",
+        );
+      }
+      res.statusCode = 200;
+      res.end("ok");
+      return true;
+    }
     const message = reaction ? null : normalizeWebhookMessage(payload);
     if (!message && !reaction) {
       if (eventType === "updated-message") {
@@ -414,6 +497,19 @@ export async function handleBlueBubblesWebhookRequest(
         );
       });
     } else if (message) {
+      if (shouldDropMentionOnlyDirectPayload(message)) {
+        if (firstTarget) {
+          logVerbose(
+            firstTarget.core,
+            firstTarget.runtime,
+            `webhook dropped ambiguous mention-only direct payload sender=${message.senderId} msg=${message.messageId ?? ""}`,
+          );
+        }
+        res.statusCode = 200;
+        res.end("ok");
+        return true;
+      }
+
       const enqueueMessage = (entry: PendingWebhookReplayRetryEntry) => {
         const debouncer = debounceRegistry.getOrCreateDebouncer(entry.target);
         void debouncer
