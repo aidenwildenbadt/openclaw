@@ -1,5 +1,11 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
-import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import {
+  resolveAgentWorkspaceDir,
+  resolveDefaultAgentId,
+  resolveSessionAgentId,
+} from "../../agents/agent-scope.js";
 import {
   readNumberParam,
   readStringArrayParam,
@@ -16,7 +22,12 @@ import type { OpenClawConfig } from "../../config/config.js";
 import { getAgentScopedMediaLocalRoots } from "../../media/local-roots.js";
 import { buildChannelAccountBindings } from "../../routing/bindings.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
-import { type GatewayClientMode, type GatewayClientName } from "../../utils/message-channel.js";
+import {
+  isDeliverableMessageChannel,
+  normalizeMessageChannel,
+  type GatewayClientMode,
+  type GatewayClientName,
+} from "../../utils/message-channel.js";
 import { throwIfAborted } from "./abort.js";
 import {
   listConfiguredMessageChannels,
@@ -36,6 +47,7 @@ import {
   resolveSlackAutoThreadId,
   resolveTelegramAutoThreadId,
 } from "./message-action-params.js";
+import { actionRequiresTarget } from "./message-action-spec.js";
 import type { MessagePollResult, MessageSendResult } from "./message.js";
 import {
   applyCrossContextDecoration,
@@ -154,6 +166,225 @@ export function getToolResult(
   result: MessageActionRunResult,
 ): AgentToolResult<unknown> | undefined {
   return "toolResult" in result ? result.toolResult : undefined;
+}
+
+function readTrimmedTargetsParam(params: Record<string, unknown>): string[] {
+  const raw = params.targets;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const targets: string[] = [];
+  for (const value of raw) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const trimmed = value.trim();
+    if (trimmed.length > 0) {
+      targets.push(trimmed);
+    }
+  }
+  return targets;
+}
+
+function normalizeRoutingHandle(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const lower = trimmed.toLowerCase();
+  if (lower.includes("@")) {
+    return lower;
+  }
+  // Preserve opaque alphanumeric handles (e.g., Slack/Discord IDs) to avoid
+  // collisions like C123... vs U123... when matching group member sets.
+  if (/[a-z]/i.test(trimmed)) {
+    return lower;
+  }
+  const digits = lower.replace(/\D/g, "");
+  if (!digits) {
+    return lower;
+  }
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return `+${digits}`;
+  }
+  return digits.length >= 10 ? `+${digits}` : digits;
+}
+
+function resolveKnownGroupTargetFromRoutingMap(params: {
+  workspace?: string;
+  channelHint?: string;
+  targets: string[];
+}): { channel: string; target: string } | undefined {
+  const workspace = params.workspace?.trim();
+  if (!workspace) {
+    return undefined;
+  }
+  const routingTargetsPath = path.join(workspace, "memory", "routing-targets.json");
+  if (!fs.existsSync(routingTargetsPath)) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(routingTargetsPath, "utf8"));
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object") {
+    return undefined;
+  }
+  const groups = (parsed as { groups?: unknown }).groups;
+  if (!groups || typeof groups !== "object") {
+    return undefined;
+  }
+  const requested = new Set(
+    params.targets.map(normalizeRoutingHandle).filter((value) => value.length > 0),
+  );
+  if (requested.size < 2) {
+    return undefined;
+  }
+  for (const group of Object.values(groups as Record<string, unknown>)) {
+    if (!group || typeof group !== "object") {
+      continue;
+    }
+    const record = group as {
+      member_handles?: unknown;
+      channels?: unknown;
+      chat_guid?: unknown;
+    };
+    const memberHandlesRaw = Array.isArray(record.member_handles)
+      ? record.member_handles
+      : Array.isArray((group as { members?: unknown }).members)
+        ? ((group as { members?: unknown }).members as unknown[])
+        : [];
+    const memberHandles = new Set(
+      memberHandlesRaw
+        .filter((value): value is string => typeof value === "string")
+        .map(normalizeRoutingHandle)
+        .filter((value) => value.length > 0),
+    );
+    if (memberHandles.size === 0) {
+      continue;
+    }
+    if (memberHandles.size !== requested.size) {
+      continue;
+    }
+    const matchesExactTargets = Array.from(requested).every((handle) => memberHandles.has(handle));
+    if (!matchesExactTargets) {
+      continue;
+    }
+    const channels =
+      record.channels && typeof record.channels === "object"
+        ? (record.channels as Record<string, unknown>)
+        : {};
+    const channelHint = params.channelHint?.trim().toLowerCase();
+    const hintedTarget =
+      channelHint && typeof channels[channelHint] === "string" ? channels[channelHint].trim() : "";
+    if (hintedTarget) {
+      return { channel: channelHint!, target: hintedTarget };
+    }
+    if (channelHint && channelHint !== "bluebubbles") {
+      // Preserve explicit non-BlueBubbles channel intent. If the mapped group lacks this channel,
+      // keep searching for another exact group match instead of silently rerouting.
+      // BlueBubbles still supports chat_guid legacy entries without channels.bluebubbles.
+      continue;
+    }
+    const bluebubblesTarget =
+      typeof channels.bluebubbles === "string" ? channels.bluebubbles.trim() : "";
+    if (bluebubblesTarget) {
+      return { channel: "bluebubbles", target: bluebubblesTarget };
+    }
+    const chatGuid = typeof record.chat_guid === "string" ? record.chat_guid.trim() : "";
+    if (chatGuid) {
+      const target = chatGuid.startsWith("chat_guid:") ? chatGuid : `chat_guid:${chatGuid}`;
+      return { channel: "bluebubbles", target };
+    }
+  }
+  return undefined;
+}
+
+async function normalizeTargetsParamForAction(params: {
+  cfg: OpenClawConfig;
+  action: ChannelMessageActionName;
+  args: Record<string, unknown>;
+  toolContext?: ChannelThreadingToolContext;
+  routingWorkspace?: string;
+}) {
+  const targets = readTrimmedTargetsParam(params.args);
+  if (targets.length === 0) {
+    return;
+  }
+  if (params.action === "broadcast") {
+    // Keep broadcast targets canonical and trimmed.
+    params.args.targets = targets;
+    return;
+  }
+  if (!actionRequiresTarget(params.action)) {
+    throw new Error(`Action ${params.action} does not accept targets.`);
+  }
+  const explicitTarget = typeof params.args.target === "string" ? params.args.target.trim() : "";
+  const legacyTo = typeof params.args.to === "string" ? params.args.to.trim() : "";
+  const legacyChannelId =
+    typeof params.args.channelId === "string" ? params.args.channelId.trim() : "";
+  const primaryTarget = explicitTarget || legacyTo || legacyChannelId;
+  if (targets.length > 1) {
+    if (primaryTarget) {
+      throw new Error(
+        `Conflicting destinations provided for ${params.action}. Use either targets or a single target destination.`,
+      );
+    }
+    const explicitChannelRaw =
+      typeof params.args.channel === "string" ? params.args.channel.trim() : "";
+    const normalizedChannelHint = explicitChannelRaw
+      ? normalizeMessageChannel(explicitChannelRaw)
+      : undefined;
+    const explicitChannelHint =
+      normalizedChannelHint && isDeliverableMessageChannel(normalizedChannelHint)
+        ? normalizedChannelHint
+        : undefined;
+    if (explicitChannelRaw && !explicitChannelHint) {
+      throw new Error(
+        `Unknown channel "${explicitChannelRaw}" for multi-target ${params.action}. Provide a configured channel or use target for one destination.`,
+      );
+    }
+    let channelHint =
+      explicitChannelHint ?? normalizeMessageChannel(params.toolContext?.currentChannelProvider);
+    if (!channelHint) {
+      const inferred = await resolveMessageChannelSelection({
+        cfg: params.cfg,
+        fallbackChannel: params.toolContext?.currentChannelProvider,
+      });
+      channelHint = inferred.channel;
+      if (inferred.source === "tool-context-fallback") {
+        params.args.channel = inferred.channel;
+      }
+    }
+    const mappedGroup = resolveKnownGroupTargetFromRoutingMap({
+      workspace: params.routingWorkspace,
+      channelHint,
+      targets,
+    });
+    if (mappedGroup) {
+      params.args.channel = mappedGroup.channel;
+      params.args.target = mappedGroup.target;
+      delete params.args.to;
+      delete params.args.channelId;
+      delete params.args.targets;
+      return;
+    }
+    throw new Error(
+      `Action ${params.action} accepts a single destination. Use target for one recipient or broadcast for multiple targets.`,
+    );
+  }
+  const onlyTarget = targets[0];
+  if (primaryTarget && primaryTarget !== onlyTarget) {
+    throw new Error(
+      `Conflicting destinations provided for ${params.action}. Use a single target destination.`,
+    );
+  }
+  if (!primaryTarget) {
+    params.args.target = onlyTarget;
+  }
+  delete params.args.targets;
 }
 
 function applyCrossContextMessageDecoration({
@@ -341,14 +572,21 @@ async function handleBroadcastAction(
         if (!resolved.ok) {
           throw resolved.error;
         }
+        const {
+          targets: _targets,
+          to: _to,
+          channelId: _channelId,
+          ...remainingSendParams
+        } = params;
+        const sendParams = {
+          ...remainingSendParams,
+          channel: targetChannel,
+          target: resolved.target.to,
+        };
         const sendResult = await runMessageAction({
           ...input,
           action: "send",
-          params: {
-            ...params,
-            channel: targetChannel,
-            target: resolved.target.to,
-          },
+          params: sendParams,
         });
         results.push({
           channel: targetChannel,
@@ -707,6 +945,17 @@ export async function runMessageAction(
   parseComponentsParam(params);
 
   const action = input.action;
+  const routingWorkspace = resolveAgentWorkspaceDir(
+    cfg,
+    resolvedAgentId ?? resolveDefaultAgentId(cfg),
+  );
+  await normalizeTargetsParamForAction({
+    cfg,
+    action,
+    args: params,
+    toolContext: input.toolContext,
+    routingWorkspace,
+  });
   if (action === "broadcast") {
     return handleBroadcastAction(input, params);
   }
