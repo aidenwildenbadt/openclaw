@@ -4,6 +4,7 @@ import { normalizeChannelId } from "../../channels/plugins/index.js";
 import type { ReplyToMode } from "../../config/types.js";
 import { normalizeTargetForProvider } from "../../infra/outbound/target-normalization.js";
 import { normalizeOptionalAccountId } from "../../routing/account-id.js";
+import { parseTelegramTarget } from "../../telegram/targets.js";
 import type { OriginatingChannelType } from "../templating.js";
 import type { ReplyPayload } from "../types.js";
 import { extractReplyToTag } from "./reply-tags.js";
@@ -149,17 +150,28 @@ const PROVIDER_ALIAS_MAP: Record<string, string> = {
   lark: "feishu",
 };
 
-function normalizeProviderForSuppression(provider?: string): string | undefined {
-  const raw = provider?.trim();
-  if (!raw) {
+function normalizeProviderForSuppression(value?: string): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
     return undefined;
   }
-  const lowered = raw.toLowerCase();
-  const normalizedChannel = normalizeChannelId(raw);
+  const lowered = trimmed.toLowerCase();
+  const normalizedChannel = normalizeChannelId(trimmed);
   if (normalizedChannel) {
     return normalizedChannel;
   }
   return PROVIDER_ALIAS_MAP[lowered] ?? lowered;
+}
+
+function normalizeThreadIdForComparison(value?: string): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (/^-?\d+$/.test(trimmed)) {
+    return String(Number.parseInt(trimmed, 10));
+  }
+  return trimmed.toLowerCase();
 }
 
 function resolveTargetProviderForSuppression(params: {
@@ -167,11 +179,44 @@ function resolveTargetProviderForSuppression(params: {
   targetProvider?: string;
 }): string {
   const targetProvider = normalizeProviderForSuppression(params.targetProvider);
-  // "message" is a placeholder for providerless sends; treat it as wildcard.
   if (!targetProvider || targetProvider === "message") {
     return params.currentProvider;
   }
   return targetProvider;
+}
+
+function targetsMatchForSuppression(params: {
+  provider: string;
+  originTarget: string;
+  targetKey: string;
+  targetThreadId?: string;
+}): boolean {
+  if (params.provider !== "telegram") {
+    return params.targetKey === params.originTarget;
+  }
+
+  const origin = parseTelegramTarget(params.originTarget);
+  const target = parseTelegramTarget(params.targetKey);
+  const explicitTargetThreadId = normalizeThreadIdForComparison(params.targetThreadId);
+  const targetThreadId =
+    explicitTargetThreadId ??
+    (target.messageThreadId != null ? String(target.messageThreadId) : undefined);
+  const originThreadId =
+    origin.messageThreadId != null ? String(origin.messageThreadId) : undefined;
+  if (origin.chatId.trim().toLowerCase() !== target.chatId.trim().toLowerCase()) {
+    return false;
+  }
+  if (originThreadId && targetThreadId != null) {
+    return originThreadId === targetThreadId;
+  }
+  if (originThreadId && targetThreadId == null) {
+    return false;
+  }
+  if (!originThreadId && targetThreadId != null) {
+    return false;
+  }
+  // chatId already matched and neither side carries thread context.
+  return true;
 }
 
 export function shouldSuppressMessagingToolReplies(params: {
@@ -209,6 +254,11 @@ export function shouldSuppressMessagingToolReplies(params: {
     if (originAccount && targetAccount && originAccount !== targetAccount) {
       return false;
     }
-    return targetKey === originTarget;
+    return targetsMatchForSuppression({
+      provider,
+      originTarget,
+      targetKey,
+      targetThreadId: target.threadId,
+    });
   });
 }

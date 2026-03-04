@@ -81,38 +81,86 @@ describe("filterMessagingToolMediaDuplicates", () => {
 
 describe("shouldSuppressMessagingToolReplies", () => {
   it("suppresses when target provider is missing but target matches current provider route", () => {
-    const suppressed = shouldSuppressMessagingToolReplies({
-      messageProvider: "telegram",
-      originatingTo: "123",
-      messagingToolSentTargets: [{ tool: "message", to: "123" }],
-    });
-    expect(suppressed).toBe(true);
+    expect(
+      shouldSuppressMessagingToolReplies({
+        messageProvider: "telegram",
+        originatingTo: "123",
+        messagingToolSentTargets: [{ tool: "message", provider: "", to: "123" }],
+      }),
+    ).toBe(true);
   });
 
   it('suppresses when target provider uses "message" placeholder and target matches', () => {
-    const suppressed = shouldSuppressMessagingToolReplies({
-      messageProvider: "telegram",
-      originatingTo: "123",
-      messagingToolSentTargets: [{ tool: "message", provider: "message", to: "123" }],
-    });
-    expect(suppressed).toBe(true);
+    expect(
+      shouldSuppressMessagingToolReplies({
+        messageProvider: "telegram",
+        originatingTo: "123",
+        messagingToolSentTargets: [{ tool: "message", provider: "message", to: "123" }],
+      }),
+    ).toBe(true);
   });
 
-  it("does not suppress when providerless target does not match current route target", () => {
-    const suppressed = shouldSuppressMessagingToolReplies({
-      messageProvider: "telegram",
-      originatingTo: "123",
-      messagingToolSentTargets: [{ tool: "message", to: "999" }],
-    });
-    expect(suppressed).toBe(false);
+  it("does not suppress when providerless target does not match origin route", () => {
+    expect(
+      shouldSuppressMessagingToolReplies({
+        messageProvider: "telegram",
+        originatingTo: "123",
+        messagingToolSentTargets: [{ tool: "message", provider: "", to: "456" }],
+      }),
+    ).toBe(false);
+  });
+
+  it("suppresses telegram topic-origin replies when explicit threadId matches", () => {
+    expect(
+      shouldSuppressMessagingToolReplies({
+        messageProvider: "telegram",
+        originatingTo: "telegram:group:-100123:topic:77",
+        messagingToolSentTargets: [
+          { tool: "message", provider: "telegram", to: "-100123", threadId: "77" },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it("does not suppress telegram topic-origin replies when explicit threadId differs", () => {
+    expect(
+      shouldSuppressMessagingToolReplies({
+        messageProvider: "telegram",
+        originatingTo: "telegram:group:-100123:topic:77",
+        messagingToolSentTargets: [
+          { tool: "message", provider: "telegram", to: "-100123", threadId: "88" },
+        ],
+      }),
+    ).toBe(false);
+  });
+
+  it("does not suppress telegram topic-origin replies when target omits topic metadata", () => {
+    expect(
+      shouldSuppressMessagingToolReplies({
+        messageProvider: "telegram",
+        originatingTo: "telegram:group:-100123:topic:77",
+        messagingToolSentTargets: [{ tool: "message", provider: "telegram", to: "-100123" }],
+      }),
+    ).toBe(false);
+  });
+
+  it("suppresses telegram replies when chatId matches but target forms differ", () => {
+    expect(
+      shouldSuppressMessagingToolReplies({
+        messageProvider: "telegram",
+        originatingTo: "telegram:group:-100123",
+        messagingToolSentTargets: [{ tool: "message", provider: "telegram", to: "-100123" }],
+      }),
+    ).toBe(true);
   });
 
   it("does not suppress when explicit target provider is different", () => {
-    const suppressed = shouldSuppressMessagingToolReplies({
-      messageProvider: "telegram",
-      originatingTo: "123",
-      messagingToolSentTargets: [{ tool: "message", provider: "slack", to: "123" }],
-    });
-    expect(suppressed).toBe(false);
+    expect(
+      shouldSuppressMessagingToolReplies({
+        messageProvider: "telegram",
+        originatingTo: "123",
+        messagingToolSentTargets: [{ tool: "message", provider: "slack", to: "123" }],
+      }),
+    ).toBe(false);
   });
 });
