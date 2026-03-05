@@ -186,13 +186,44 @@ function readTrimmedTargetsParam(params: Record<string, unknown>): string[] {
   return targets;
 }
 
-function normalizeRoutingHandle(value: string): string {
+const PHONE_NORMALIZED_MEMBER_CHANNELS = new Set(["imessage", "whatsapp", "signal", "bluebubbles"]);
+
+function parsePrefixedRoutingMemberHandle(value: string): {
+  normalizedChannel?: string;
+  handle: string;
+} {
   const trimmed = value.trim();
+  if (!trimmed) {
+    return { handle: "" };
+  }
+  const delimiter = trimmed.indexOf(":");
+  if (delimiter <= 0) {
+    return { handle: trimmed };
+  }
+  const prefix = trimmed.slice(0, delimiter).trim();
+  const suffix = trimmed.slice(delimiter + 1).trim();
+  if (!suffix) {
+    return { handle: trimmed };
+  }
+  const normalizedChannel = normalizeMessageChannel(prefix);
+  if (!normalizedChannel || !isDeliverableMessageChannel(normalizedChannel)) {
+    return { handle: trimmed };
+  }
+  return { normalizedChannel, handle: suffix };
+}
+
+function normalizeRoutingHandle(value: string): string {
+  const { normalizedChannel, handle } = parsePrefixedRoutingMemberHandle(value);
+  const trimmed = handle.trim();
   if (!trimmed) {
     return "";
   }
   const lower = trimmed.toLowerCase();
   if (lower.includes("@")) {
+    return lower;
+  }
+  if (normalizedChannel && !PHONE_NORMALIZED_MEMBER_CHANNELS.has(normalizedChannel)) {
+    // Preserve opaque IDs for non-phone channels (for example slack:U123 / discord:123).
     return lower;
   }
   // Preserve opaque alphanumeric handles (e.g., Slack/Discord IDs) to avoid

@@ -276,6 +276,78 @@ describe("runMessageAction context isolation", () => {
     });
   });
 
+  it("maps provider-prefixed member handles to known groups", async () => {
+    await withSandbox(async (workspaceDir) => {
+      await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });
+      await fs.writeFile(
+        path.join(workspaceDir, "memory", "routing-targets.json"),
+        JSON.stringify({
+          groups: {
+            kevin_fernanda: {
+              member_handles: ["+14155592088", "+14255320947"],
+              channels: {
+                imessage: "chat_id:3",
+              },
+            },
+            team_alpha: {
+              member_handles: ["u11111111", "u22222222"],
+              channels: {
+                slack: "channel:C12345678",
+              },
+            },
+          },
+        }),
+      );
+
+      const cfg = {
+        channels: {
+          imessage: { enabled: true },
+          slack: {
+            botToken: "xoxb-test",
+            appToken: "xapp-test",
+          },
+        },
+        agents: {
+          defaults: {
+            workspace: workspaceDir,
+          },
+        },
+      } as OpenClawConfig;
+
+      const imessageResult = await runDrySend({
+        cfg,
+        actionParams: {
+          channel: "imessage",
+          targets: ["imessage:+14155592088", "imessage:+14255320947"],
+          message: "hi",
+        },
+      });
+
+      expect(imessageResult.kind).toBe("send");
+      if (imessageResult.kind !== "send") {
+        throw new Error("expected send result");
+      }
+      expect(imessageResult.channel).toBe("imessage");
+      expect(imessageResult.to).toBe("chat_id:3");
+
+      const slackResult = await runDrySend({
+        cfg,
+        actionParams: {
+          channel: "slack",
+          targets: ["slack:U11111111", "slack:U22222222"],
+          message: "hi",
+        },
+      });
+
+      expect(slackResult.kind).toBe("send");
+      if (slackResult.kind !== "send") {
+        throw new Error("expected send result");
+      }
+      expect(slackResult.channel).toBe("slack");
+      expect(slackResult.to).toBe("channel:C12345678");
+    });
+  });
+
   it("infers single configured channel before remapping multi-target send", async () => {
     await withSandbox(async (workspaceDir) => {
       const imessagePlugin = createIMessageTestPlugin();
