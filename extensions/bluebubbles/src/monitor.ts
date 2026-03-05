@@ -8,7 +8,7 @@ import {
   readWebhookBodyOrReject,
   resolveWebhookTargetWithAuthOrRejectSync,
   resolveWebhookTargets,
-} from "openclaw/plugin-sdk";
+} from "openclaw/plugin-sdk/bluebubbles";
 import { createBlueBubblesDebounceRegistry } from "./monitor-debounce.js";
 import {
   normalizeWebhookMessage,
