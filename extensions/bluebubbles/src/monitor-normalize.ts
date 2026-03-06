@@ -596,8 +596,6 @@ export type NormalizedWebhookMessage = {
   replyToId?: string;
   replyToBody?: string;
   replyToSender?: string;
-  itemType?: number;
-  dateEdited?: number;
   explicitIsGroupHint?: boolean;
   explicitGroupChatHint?: boolean;
   explicitWasMentioned?: boolean;
