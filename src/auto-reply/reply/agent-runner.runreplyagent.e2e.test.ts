@@ -334,6 +334,21 @@ describe("runReplyAgent heartbeat followup guard", () => {
     expect(state.runEmbeddedPiAgentMock).not.toHaveBeenCalled();
   });
 
+  it("does not emit busy notice when no stable session state is available", async () => {
+    const { run } = createMinimalRun({
+      opts: { isHeartbeat: false },
+      isActive: true,
+      shouldFollowup: true,
+      resolvedQueueMode: "collect",
+    });
+
+    const result = await run();
+
+    expect(result).toBeUndefined();
+    expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledTimes(1);
+    expect(state.runEmbeddedPiAgentMock).not.toHaveBeenCalled();
+  });
+
   it("does not emit busy notice when followup enqueue is skipped", async () => {
     vi.mocked(enqueueFollowupRun).mockReturnValueOnce(false);
     const sessionEntry: SessionEntry = {
