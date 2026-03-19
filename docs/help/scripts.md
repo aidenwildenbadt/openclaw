@@ -22,6 +22,11 @@ Use these when a task is clearly tied to a script; otherwise prefer the CLI.
 Auth monitoring scripts are documented here:
 [/automation/auth-monitoring](/automation/auth-monitoring)
 
+## Fork maintenance scripts
+
+Fork-maintenance scripts are documented here:
+[/help/fork-maintenance](/help/fork-maintenance)
+
 ## When adding scripts
 
 - Keep scripts focused and documented.
