@@ -156,6 +156,16 @@ describe("shouldSuppressMessagingToolReplies", () => {
     ).toBe(true);
   });
 
+  it("does not suppress when explicit target provider is different", () => {
+    expect(
+      shouldSuppressMessagingToolReplies({
+        messageProvider: "telegram",
+        originatingTo: "123",
+        messagingToolSentTargets: [{ tool: "message", provider: "slack", to: "123" }],
+      }),
+    ).toBe(false);
+  });
+
   it("suppresses telegram replies even when the active plugin registry omits telegram", () => {
     setActivePluginRegistry(createTestRegistry([]));
 

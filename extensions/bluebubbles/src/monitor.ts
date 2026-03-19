@@ -1,7 +1,11 @@
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createBlueBubblesDebounceRegistry } from "./monitor-debounce.js";
-import { normalizeWebhookMessage, normalizeWebhookReaction } from "./monitor-normalize.js";
+import {
+  normalizeWebhookMessage,
+  normalizeWebhookReaction,
+  type NormalizedWebhookMessage,
+} from "./monitor-normalize.js";
 import { logVerbose, processMessage, processReaction } from "./monitor-processing.js";
 import {
   _resetBlueBubblesShortIdState,
@@ -85,6 +89,65 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function hasConcreteChatIdentity(record: Record<string, unknown> | null): boolean {
+  if (!record) {
+    return false;
+  }
+  const chat = asRecord(record.chat) ?? asRecord(record.conversation) ?? null;
+  const chatFromList =
+    Array.isArray(record.chats) && record.chats.length > 0 ? asRecord(record.chats[0]) : null;
+  const sources = [record, chat, chatFromList];
+  for (const source of sources) {
+    if (!source) {
+      continue;
+    }
+    const hasChatGuid =
+      typeof source.chatGuid === "string" ||
+      typeof source.chat_guid === "string" ||
+      typeof source.guid === "string";
+    const hasChatIdentifier =
+      typeof source.chatIdentifier === "string" ||
+      typeof source.chat_identifier === "string" ||
+      typeof source.identifier === "string";
+    const hasChatId =
+      typeof source.chatId === "number" ||
+      typeof source.chat_id === "number" ||
+      typeof source.id === "number";
+    if (hasChatGuid || hasChatIdentifier || hasChatId) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function shouldDropUnresolvedDirectMirrorMetadata(payload: Record<string, unknown>): boolean {
+  const data = asRecord(payload.data) ?? payload;
+  const message = asRecord((asRecord(data)?.message as unknown) ?? data);
+  if (!message) {
+    return false;
+  }
+  const conversationLabelRaw =
+    typeof message.conversationLabel === "string"
+      ? message.conversationLabel
+      : typeof message.conversation_label === "string"
+        ? message.conversation_label
+        : "";
+  const conversationLabel = conversationLabelRaw.trim().toLowerCase();
+  const unknownConversationLabel =
+    conversationLabel === "group id:unknown" || conversationLabel.startsWith("group id:unknown");
+  const hasMessageIdFull =
+    typeof message.messageIdFull === "string" || typeof message.message_id_full === "string";
+  const groupHintRaw = message.isGroupChat ?? message.is_group_chat;
+  const unknownGroupHint =
+    typeof groupHintRaw === "string" && groupHintRaw.trim().toLowerCase() === "unknown";
+  return (
+    unknownConversationLabel &&
+    hasMessageIdFull &&
+    unknownGroupHint &&
+    !hasConcreteChatIdentity(message)
+  );
+}
+
 function maskSecret(value: string): string {
   if (value.length <= 6) {
     return "***";
@@ -115,6 +178,54 @@ function safeEqualSecret(aRaw: string, bRaw: string): boolean {
     return false;
   }
   return timingSafeEqual(bufA, bufB);
+}
+
+function hasExplicitChatContext(message: NormalizedWebhookMessage): boolean {
+  const hasChatGuid = Boolean(message.chatGuid?.trim());
+  const hasChatIdentifier = Boolean(message.chatIdentifier?.trim());
+  const hasChatId = typeof message.chatId === "number" && Number.isFinite(message.chatId);
+  return Boolean(hasChatGuid || hasChatIdentifier || hasChatId);
+}
+
+function shouldDropMentionOnlyDirectPayload(message: NormalizedWebhookMessage): boolean {
+  if (message.isGroup) {
+    return false;
+  }
+  const hasExplicitNonGroupHint =
+    message.explicitGroupChatHint === false || message.explicitIsGroupHint === false;
+  const hasResolvedChatHandle =
+    Boolean(message.chatGuid?.trim()) ||
+    Boolean(message.chatIdentifier?.trim()) ||
+    (typeof message.chatId === "number" && Number.isFinite(message.chatId));
+  const hasAmbiguousGroupHintWithoutChatContext =
+    message.hasConversationLabel &&
+    message.hasExplicitGroupChatFlag &&
+    !hasExplicitNonGroupHint &&
+    !hasResolvedChatHandle;
+  if (hasAmbiguousGroupHintWithoutChatContext) {
+    return true;
+  }
+  if (message.explicitWasMentioned !== true) {
+    return false;
+  }
+  if (
+    message.hasConversationLabel &&
+    message.hasExplicitGroupChatFlag &&
+    !hasExplicitNonGroupHint &&
+    message.hasMessageIdFull &&
+    !message.messageId?.trim()
+  ) {
+    return true;
+  }
+  if (
+    message.hasConversationLabel &&
+    message.hasExplicitGroupChatFlag &&
+    !hasExplicitNonGroupHint &&
+    !hasResolvedChatHandle
+  ) {
+    return true;
+  }
+  return !hasExplicitChatContext(message);
 }
 
 export async function handleBlueBubblesWebhookRequest(
@@ -212,6 +323,18 @@ export async function handleBlueBubblesWebhookRequest(
         }
         return true;
       }
+      if (eventType === "new-message" && shouldDropUnresolvedDirectMirrorMetadata(payload)) {
+        if (firstTarget) {
+          logVerbose(
+            firstTarget.core,
+            firstTarget.runtime,
+            "webhook dropped unresolved direct mirror metadata payload",
+          );
+        }
+        res.statusCode = 200;
+        res.end("ok");
+        return true;
+      }
       const message = reaction ? null : normalizeWebhookMessage(payload);
       if (!message && !reaction) {
         res.statusCode = 400;
@@ -228,6 +351,19 @@ export async function handleBlueBubblesWebhookRequest(
           );
         });
       } else if (message) {
+        if (shouldDropMentionOnlyDirectPayload(message)) {
+          if (firstTarget) {
+            logVerbose(
+              firstTarget.core,
+              firstTarget.runtime,
+              `webhook dropped ambiguous mention-only direct payload sender=${message.senderId} msg=${message.messageId ?? ""}`,
+            );
+          }
+          res.statusCode = 200;
+          res.end("ok");
+          return true;
+        }
+
         // Route messages through debouncer to coalesce rapid-fire events
         // (e.g., text message + URL balloon arriving as separate webhooks)
         const debouncer = debounceRegistry.getOrCreateDebouncer(target);
