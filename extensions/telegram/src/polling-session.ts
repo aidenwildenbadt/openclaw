@@ -1,4 +1,6 @@
 import { type RunOptions, run } from "@grammyjs/runner";
+import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-runtime";
+import { createConnectedChannelStatusPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import { computeBackoff, sleepWithAbort } from "openclaw/plugin-sdk/infra-runtime";
 import { formatErrorMessage } from "openclaw/plugin-sdk/infra-runtime";
 import { formatDurationPrecise } from "openclaw/plugin-sdk/infra-runtime";
@@ -48,6 +50,7 @@ type TelegramPollingSessionOpts = {
   getLastUpdateId: () => number | null;
   persistUpdateId: (updateId: number) => Promise<void>;
   log: (line: string) => void;
+  setStatus?: (patch: Omit<ChannelAccountSnapshot, "accountId">) => void;
   /** Pre-resolved Telegram transport to reuse across bot instances */
   telegramTransport?: TelegramTransport;
 };
@@ -186,11 +189,16 @@ export class TelegramPollingSession {
     await this.#confirmPersistedOffset(bot);
 
     let lastGetUpdatesAt = Date.now();
-    bot.api.config.use((prev, method, payload, signal) => {
+    bot.api.config.use(async (prev, method, payload, signal) => {
       if (method === "getUpdates") {
         lastGetUpdatesAt = Date.now();
       }
-      return prev(method, payload, signal);
+      const result = await prev(method, payload, signal);
+      if (method === "getUpdates") {
+        const at = Date.now();
+        this.opts.setStatus?.(createConnectedChannelStatusPatch(at));
+      }
+      return result;
     });
 
     const runner = run(bot, this.opts.runnerOptions);
@@ -275,6 +283,7 @@ export class TelegramPollingSession {
       );
       return shouldRestart ? "continue" : "exit";
     } catch (err) {
+      this.opts.setStatus?.({ connected: false });
       this.#forceRestarted = false;
       if (this.opts.abortSignal?.aborted) {
         throw err;
@@ -294,6 +303,7 @@ export class TelegramPollingSession {
       );
       return shouldRestart ? "continue" : "exit";
     } finally {
+      this.opts.setStatus?.({ connected: false });
       clearInterval(watchdog);
       if (forceCycleTimer) {
         clearTimeout(forceCycleTimer);
