@@ -254,6 +254,7 @@ describe("TelegramPollingSession", () => {
     expect(setStatus).toHaveBeenCalledWith(
       expect.objectContaining({
         connected: true,
+        mode: "polling",
       }),
     );
     expect(setStatus).toHaveBeenLastCalledWith({ connected: false });

@@ -196,7 +196,10 @@ export class TelegramPollingSession {
       const result = await prev(method, payload, signal);
       if (method === "getUpdates") {
         const at = Date.now();
-        this.opts.setStatus?.(createConnectedChannelStatusPatch(at));
+        this.opts.setStatus?.({
+          ...createConnectedChannelStatusPatch(at),
+          mode: "polling",
+        });
       }
       return result;
     });
@@ -283,7 +286,6 @@ export class TelegramPollingSession {
       );
       return shouldRestart ? "continue" : "exit";
     } catch (err) {
-      this.opts.setStatus?.({ connected: false });
       this.#forceRestarted = false;
       if (this.opts.abortSignal?.aborted) {
         throw err;
