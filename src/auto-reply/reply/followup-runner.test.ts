@@ -139,8 +139,13 @@ describe("createFollowupRunner compaction", () => {
     await runner(queued);
 
     expect(onBlockReply).toHaveBeenCalled();
-    const firstCall = (onBlockReply.mock.calls as unknown as Array<Array<{ text?: string }>>)[0];
+    const firstCall = (
+      onBlockReply.mock.calls as unknown as Array<
+        Array<{ text?: string; isCompactionNotice?: boolean }>
+      >
+    )[0];
     expect(firstCall?.[0]?.text).toContain("Auto-compaction complete");
+    expect(firstCall?.[0]?.isCompactionNotice).toBe(true);
     expect(sessionStore.main.compactionCount).toBe(1);
   });
 
@@ -190,8 +195,13 @@ describe("createFollowupRunner compaction", () => {
     await runner(queued);
 
     expect(onBlockReply).toHaveBeenCalled();
-    const firstCall = (onBlockReply.mock.calls as unknown as Array<Array<{ text?: string }>>)[0];
+    const firstCall = (
+      onBlockReply.mock.calls as unknown as Array<
+        Array<{ text?: string; isCompactionNotice?: boolean }>
+      >
+    )[0];
     expect(firstCall?.[0]?.text).toContain("Auto-compaction complete");
+    expect(firstCall?.[0]?.isCompactionNotice).toBe(true);
     expect(sessionStore.main.compactionCount).toBe(2);
     expect(sessionStore.main.sessionId).toBe("session-rotated");
     expect(await normalizeComparablePath(sessionStore.main.sessionFile ?? "")).toBe(
