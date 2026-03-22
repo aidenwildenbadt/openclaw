@@ -1065,6 +1065,26 @@ export async function startGatewayServer(
 
   const canvasHostServerPort = (canvasHostServer as CanvasHostServer | null)?.port;
 
+  const refreshRuntimeConfigFromDisk: import("./server-methods/types.js").GatewayRequestContext["refreshRuntimeConfigFromDisk"] =
+    async (configOverride) => {
+      if (!getActiveSecretsRuntimeSnapshot()) {
+        return;
+      }
+      if (configOverride) {
+        await activateRuntimeSecrets(configOverride, { reason: "reload", activate: true });
+        return;
+      }
+      const reloadMode = resolveGatewayReloadSettings(loadConfig()).mode;
+      if (reloadMode === "off" || reloadMode === "restart") {
+        return;
+      }
+      const snapshot = await readConfigFileSnapshot();
+      if (!snapshot.exists || !snapshot.valid) {
+        return;
+      }
+      await activateRuntimeSecrets(snapshot.config, { reason: "reload", activate: true });
+    };
+
   const gatewayRequestContext: import("./server-methods/types.js").GatewayRequestContext = {
     deps,
     cron,
@@ -1125,6 +1145,7 @@ export async function startGatewayServer(
     markChannelLoggedOut,
     wizardRunner,
     broadcastVoiceWakeChanged,
+    refreshRuntimeConfigFromDisk,
   };
 
   // Register a lazy fallback for plugin subagent dispatch in non-WS paths
@@ -1153,27 +1174,7 @@ export async function startGatewayServer(
       ...secretsHandlers,
     },
     broadcast,
-    context: {
-      ...gatewayRequestContext,
-      refreshRuntimeConfigFromDisk: async (configOverride) => {
-        if (!getActiveSecretsRuntimeSnapshot()) {
-          return;
-        }
-        if (configOverride) {
-          await activateRuntimeSecrets(configOverride, { reason: "reload", activate: true });
-          return;
-        }
-        const reloadMode = resolveGatewayReloadSettings(loadConfig()).mode;
-        if (reloadMode === "off" || reloadMode === "restart") {
-          return;
-        }
-        const snapshot = await readConfigFileSnapshot();
-        if (!snapshot.exists || !snapshot.valid) {
-          return;
-        }
-        await activateRuntimeSecrets(snapshot.config, { reason: "reload", activate: true });
-      },
-    },
+    context: gatewayRequestContext,
   });
   logGatewayStartup({
     cfg: cfgAtStart,
