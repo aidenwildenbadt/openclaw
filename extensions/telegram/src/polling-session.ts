@@ -59,6 +59,7 @@ export class TelegramPollingSession {
   #restartAttempts = 0;
   #webhookCleared = false;
   #forceRestarted = false;
+  #hasSeenSuccessfulPoll = false;
   #activeRunner: ReturnType<typeof run> | undefined;
   #activeFetchAbort: AbortController | undefined;
 
@@ -78,6 +79,10 @@ export class TelegramPollingSession {
 
   async runUntilAbort(): Promise<void> {
     while (!this.opts.abortSignal?.aborted) {
+      this.opts.setStatus?.({
+        mode: "polling",
+        ...(this.#hasSeenSuccessfulPoll ? {} : { connected: false }),
+      });
       const bot = await this.#createPollingBot();
       if (!bot) {
         continue;
@@ -186,10 +191,6 @@ export class TelegramPollingSession {
   }
 
   async #runPollingCycle(bot: TelegramBot): Promise<"continue" | "exit"> {
-    this.opts.setStatus?.({
-      mode: "polling",
-      connected: false,
-    });
     await this.#confirmPersistedOffset(bot);
 
     let lastGetUpdatesAt = Date.now();
@@ -200,6 +201,7 @@ export class TelegramPollingSession {
       const result = await prev(method, payload, signal);
       if (method === "getUpdates") {
         const at = Date.now();
+        this.#hasSeenSuccessfulPoll = true;
         this.opts.setStatus?.({
           ...createConnectedChannelStatusPatch(at),
           mode: "polling",
