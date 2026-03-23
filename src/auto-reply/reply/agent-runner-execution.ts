@@ -372,7 +372,13 @@ export async function runAgentTurnWithFallback(params: {
                 blockReplyBreak: params.resolvedBlockStreamingBreak,
                 blockReplyChunking: params.blockReplyChunking,
                 onPartialReply: async (payload) => {
+                  if (params.shouldSuppressOutboundDelivery?.()) {
+                    return;
+                  }
                   const textForTyping = await handlePartialForTyping(payload);
+                  if (params.shouldSuppressOutboundDelivery?.()) {
+                    return;
+                  }
                   if (!params.opts?.onPartialReply || textForTyping === undefined) {
                     return;
                   }
@@ -388,7 +394,13 @@ export async function runAgentTurnWithFallback(params: {
                 onReasoningStream:
                   params.typingSignals.shouldStartOnReasoning || params.opts?.onReasoningStream
                     ? async (payload) => {
+                        if (params.shouldSuppressOutboundDelivery?.()) {
+                          return;
+                        }
                         await params.typingSignals.signalReasoningDelta();
+                        if (params.shouldSuppressOutboundDelivery?.()) {
+                          return;
+                        }
                         await params.opts?.onReasoningStream?.({
                           text: payload.text,
                           mediaUrls: payload.mediaUrls,
