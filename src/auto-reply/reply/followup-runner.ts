@@ -10,7 +10,7 @@ import { lookupContextTokens } from "../../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import { runWithModelFallback } from "../../agents/model-fallback.js";
 import { runEmbeddedPiAgent } from "../../agents/pi-embedded.js";
-import { loadSessionStore, type SessionEntry } from "../../config/sessions.js";
+import type { SessionEntry } from "../../config/sessions.js";
 import {
   resolveSessionFilePath,
   resolveSessionFilePathOptions,
@@ -40,6 +40,10 @@ import {
 } from "./reply-payloads.js";
 import { resolveReplyToMode } from "./reply-threading.js";
 import { isRoutableChannel, routeReply } from "./route-reply.js";
+import {
+  cacheResolvedSessionEntry,
+  loadCanonicalLatestSessionEntry,
+} from "./session-entry-resolution.js";
 import { incrementRunCompactionCount, persistRunSessionUsage } from "./session-run-accounting.js";
 import { createTypingSignaler } from "./typing-mode.js";
 import type { TypingController } from "./typing.js";
@@ -167,17 +171,19 @@ export function createFollowupRunner(params: {
   return async (queued: FollowupRun) => {
     try {
       const loadLatestSessionEntry = () => {
-        if (!sessionKey || !storePath) {
+        const latest = loadCanonicalLatestSessionEntry({
+          sessionKey,
+          storePath,
+        });
+        if (!latest.entry) {
           return undefined;
         }
-        const latestEntry = loadSessionStore(storePath, { skipCache: true })[sessionKey];
-        if (!latestEntry) {
-          return undefined;
-        }
-        if (sessionStore) {
-          sessionStore[sessionKey] = latestEntry;
-        }
-        return latestEntry;
+        cacheResolvedSessionEntry(sessionStore, latest.entry, [
+          sessionKey ?? "",
+          latest.canonicalKey ?? "",
+          ...latest.storeKeys,
+        ]);
+        return latest.entry;
       };
       const resolveLatestSessionEntry = () =>
         loadLatestSessionEntry() ??
@@ -481,10 +487,20 @@ export function createFollowupRunner(params: {
         }
         if (queued.run.verboseLevel && queued.run.verboseLevel !== "off") {
           const suffix = typeof count === "number" ? ` (count ${count})` : "";
-          finalPayloads.unshift({
-            text: `🧹 Auto-compaction complete${suffix}.`,
-            isCompactionNotice: true,
+          const [compactionNotice] = applyReplyThreading({
+            payloads: [
+              {
+                text: `🧹 Auto-compaction complete${suffix}.`,
+                isCompactionNotice: true,
+              },
+            ],
+            replyToMode,
+            replyToChannel,
+            currentMessageId,
           });
+          if (compactionNotice) {
+            finalPayloads.unshift(compactionNotice);
+          }
         }
       }
       if (shouldDropSupersededQueuedRun()) {
