@@ -5,39 +5,127 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 /* Mocks                                                              */
 /* ------------------------------------------------------------------ */
 
-const mocks = vi.hoisted(() => ({
-  loadConfigReturn: {} as Record<string, unknown>,
-  listAgentEntries: vi.fn(() => [] as Array<{ agentId: string }>),
-  findAgentEntryIndex: vi.fn(() => -1),
-  applyAgentConfig: vi.fn((_cfg: unknown, _opts: unknown) => ({})),
-  pruneAgentConfig: vi.fn(() => ({ config: {}, removedBindings: 0 })),
-  writeConfigFile: vi.fn(async () => {}),
-  ensureAgentWorkspace: vi.fn(async () => {}),
-  isWorkspaceSetupCompleted: vi.fn(async () => false),
-  resolveAgentDir: vi.fn(() => "/agents/test-agent"),
-  resolveAgentWorkspaceDir: vi.fn(() => "/workspace/test-agent"),
-  resolveSessionTranscriptsDirForAgent: vi.fn(() => "/transcripts/test-agent"),
-  listAgentsForGateway: vi.fn(() => ({
-    defaultId: "main",
-    mainKey: "agent:main:main",
-    scope: "global",
-    agents: [],
-  })),
-  movePathToTrash: vi.fn(async () => "/trashed"),
-  fsAccess: vi.fn(async () => {}),
-  fsMkdir: vi.fn(async () => undefined),
-  fsAppendFile: vi.fn(async () => {}),
-  fsReadFile: vi.fn(async () => ""),
-  fsStat: vi.fn(async (..._args: unknown[]) => null as import("node:fs").Stats | null),
-  fsLstat: vi.fn(async (..._args: unknown[]) => null as import("node:fs").Stats | null),
-  fsRealpath: vi.fn(async (p: string) => p),
-  fsReadlink: vi.fn(async () => ""),
-  fsOpen: vi.fn(async () => ({}) as unknown),
-  writeFileWithinRoot: vi.fn(async () => {}),
-}));
+const mocks = vi.hoisted(() => {
+  const state = {
+    writtenConfig: null as Record<string, unknown> | null,
+    runtimeSnapshotActive: true,
+    runtimeConfig: null as Record<string, unknown> | null,
+  };
+  return {
+    state,
+    loadConfigReturn: {} as Record<string, unknown>,
+    clearConfigCache: vi.fn(),
+    listAgentEntries: vi.fn((cfg?: Record<string, unknown>) => {
+      const raw = (cfg as { __agentIds?: unknown } | undefined)?.__agentIds;
+      const ids =
+        Array.isArray(raw) && raw.length > 0
+          ? raw.filter((value): value is string => typeof value === "string")
+          : [];
+      return ids.map((agentId) => ({ agentId }));
+    }),
+    findAgentEntryIndex: vi.fn((entries: Array<{ agentId: string }>, agentId: string) =>
+      entries.findIndex((entry) => entry.agentId === agentId),
+    ),
+    applyAgentConfig: vi.fn((cfg: unknown, opts: unknown) => {
+      const next =
+        cfg && typeof cfg === "object"
+          ? ({ ...(cfg as Record<string, unknown>) } as Record<string, unknown>)
+          : ({} as Record<string, unknown>);
+      const existingRaw = next.__agentIds;
+      const existing =
+        Array.isArray(existingRaw) && existingRaw.length > 0
+          ? existingRaw.filter((value): value is string => typeof value === "string")
+          : [];
+      const candidateAgentId =
+        opts && typeof opts === "object" ? (opts as { agentId?: unknown }).agentId : undefined;
+      if (typeof candidateAgentId === "string" && candidateAgentId.trim()) {
+        const normalized = candidateAgentId.trim();
+        next.__agentIds = existing.includes(normalized) ? existing : [...existing, normalized];
+      } else {
+        next.__agentIds = existing;
+      }
+      return next;
+    }),
+    pruneAgentConfig: vi.fn(() => ({ config: {}, removedBindings: 0 })),
+    writeConfigFile: vi.fn(async (cfg: unknown) => {
+      if (cfg && typeof cfg === "object") {
+        state.writtenConfig = { ...(cfg as Record<string, unknown>) };
+        return;
+      }
+      state.writtenConfig = {};
+    }),
+    ensureAgentWorkspace: vi.fn(async () => {}),
+    isWorkspaceSetupCompleted: vi.fn(async () => false),
+    resolveAgentDir: vi.fn(() => "/agents/test-agent"),
+    resolveAgentWorkspaceDir: vi.fn(() => "/workspace/test-agent"),
+    resolveSessionTranscriptsDirForAgent: vi.fn(() => "/transcripts/test-agent"),
+    listAgentsForGateway: vi.fn(() => ({
+      defaultId: "main",
+      mainKey: "agent:main:main",
+      scope: "global",
+      agents: [],
+    })),
+    movePathToTrash: vi.fn(async () => "/trashed"),
+    fsAccess: vi.fn(async () => {}),
+    fsMkdir: vi.fn(async () => undefined),
+    fsAppendFile: vi.fn(async () => {}),
+    fsReadFile: vi.fn(async () => ""),
+    fsStat: vi.fn(async (..._args: unknown[]) => null as import("node:fs").Stats | null),
+    fsLstat: vi.fn(async (..._args: unknown[]) => null as import("node:fs").Stats | null),
+    fsRealpath: vi.fn(async (p: string) => p),
+    fsReadlink: vi.fn(async () => ""),
+    fsOpen: vi.fn(async () => ({}) as unknown),
+    getActiveSecretsRuntimeSnapshot: vi.fn(() =>
+      state.runtimeSnapshotActive
+        ? {
+            sourceConfig: {},
+            config: {},
+            authStores: [],
+            warnings: [],
+          }
+        : null,
+    ),
+    prepareSecretsRuntimeSnapshot: vi.fn(
+      async ({ config }: { config: Record<string, unknown> }) => ({
+        sourceConfig: config,
+        config,
+        authStores: [],
+        warnings: [],
+      }),
+    ),
+    activateSecretsRuntimeSnapshot: vi.fn((snapshot: { config: Record<string, unknown> }) => {
+      state.runtimeSnapshotActive = true;
+      state.runtimeConfig = snapshot.config;
+    }),
+    writeFileWithinRoot: vi.fn(async () => {}),
+    refreshRuntimeConfigFromDisk: vi.fn(async () => {
+      if (!state.runtimeSnapshotActive) {
+        return;
+      }
+      state.runtimeConfig = state.writtenConfig ? { ...state.writtenConfig } : state.runtimeConfig;
+    }),
+  };
+});
 
 vi.mock("../../config/config.js", () => ({
-  loadConfig: () => mocks.loadConfigReturn,
+  clearConfigCache: mocks.clearConfigCache,
+  loadConfig: () => mocks.state.runtimeConfig ?? mocks.loadConfigReturn,
+  projectConfigOntoRuntimeSourceSnapshot: <T>(cfg: T) => cfg,
+  readConfigFileSnapshot: async () => {
+    const config = mocks.state.writtenConfig ?? mocks.loadConfigReturn;
+    return {
+      path: "/tmp/openclaw.json",
+      exists: true,
+      raw: "{}",
+      parsed: config,
+      resolved: config,
+      valid: true,
+      config,
+      issues: [],
+      warnings: [],
+      legacyIssues: [],
+    };
+  },
   writeConfigFile: mocks.writeConfigFile,
 }));
 
@@ -49,7 +137,14 @@ vi.mock("../../commands/agents.config.js", () => ({
 }));
 
 vi.mock("../../agents/agent-scope.js", () => ({
-  listAgentIds: () => ["main"],
+  listAgentIds: (cfg?: Record<string, unknown>) => {
+    const raw = (cfg as { __agentIds?: unknown } | undefined)?.__agentIds;
+    const ids =
+      Array.isArray(raw) && raw.length > 0
+        ? raw.filter((value): value is string => typeof value === "string")
+        : [];
+    return ["main", ...ids.filter((agentId) => agentId !== "main")];
+  },
   resolveAgentDir: mocks.resolveAgentDir,
   resolveAgentWorkspaceDir: mocks.resolveAgentWorkspaceDir,
 }));
@@ -81,6 +176,11 @@ vi.mock("../session-utils.js", () => ({
   listAgentsForGateway: mocks.listAgentsForGateway,
 }));
 
+vi.mock("../../secrets/runtime.js", () => ({
+  getActiveSecretsRuntimeSnapshot: mocks.getActiveSecretsRuntimeSnapshot,
+  prepareSecretsRuntimeSnapshot: mocks.prepareSecretsRuntimeSnapshot,
+  activateSecretsRuntimeSnapshot: mocks.activateSecretsRuntimeSnapshot,
+}));
 vi.mock("../../infra/fs-safe.js", async () => {
   const actual =
     await vi.importActual<typeof import("../../infra/fs-safe.js")>("../../infra/fs-safe.js");
@@ -130,7 +230,9 @@ function makeCall(method: keyof typeof agentsHandlers, params: Record<string, un
   const promise = handler({
     params,
     respond,
-    context: {} as never,
+    context: {
+      refreshRuntimeConfigFromDisk: mocks.refreshRuntimeConfigFromDisk,
+    } as never,
     req: { type: "req" as const, id: "1", method },
     client: null,
     isWebchatConnect: () => false,
@@ -230,6 +332,22 @@ async function expectUnsafeWorkspaceFile(method: "agents.files.get" | "agents.fi
 }
 
 beforeEach(() => {
+  mocks.state.writtenConfig = null;
+  mocks.state.runtimeSnapshotActive = true;
+  mocks.state.runtimeConfig = null;
+  mocks.refreshRuntimeConfigFromDisk.mockImplementation(async () => {
+    if (!mocks.state.runtimeSnapshotActive) {
+      return;
+    }
+    mocks.state.runtimeConfig = mocks.state.writtenConfig ? { ...mocks.state.writtenConfig } : null;
+  });
+  mocks.writeConfigFile.mockImplementation(async (cfg: unknown) => {
+    if (cfg && typeof cfg === "object") {
+      mocks.state.writtenConfig = { ...(cfg as Record<string, unknown>) };
+      return;
+    }
+    mocks.state.writtenConfig = {};
+  });
   mocks.fsReadFile.mockImplementation(async () => {
     throw createEnoentError();
   });
@@ -260,8 +378,10 @@ describe("agents.create", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.loadConfigReturn = {};
-    mocks.findAgentEntryIndex.mockReturnValue(-1);
-    mocks.applyAgentConfig.mockImplementation((_cfg, _opts) => ({}));
+    mocks.findAgentEntryIndex.mockImplementation(
+      (entries: Array<{ agentId: string }>, agentId: string) =>
+        entries.findIndex((entry) => entry.agentId === agentId),
+    );
   });
 
   it("creates a new agent successfully", async () => {
@@ -284,13 +404,172 @@ describe("agents.create", () => {
     expect(mocks.writeConfigFile).toHaveBeenCalled();
   });
 
+  it("refreshes runtime snapshot so follow-up RPCs can resolve the new agent", async () => {
+    mocks.loadConfigReturn = { gateway: { reload: { mode: "off" } } };
+    const { respond, promise } = makeCall("agents.create", {
+      name: "Ready Agent",
+      workspace: "/home/user/agents/ready",
+    });
+    await promise;
+
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        ok: true,
+        agentId: "ready-agent",
+      }),
+      undefined,
+    );
+    expect(mocks.refreshRuntimeConfigFromDisk).toHaveBeenCalledTimes(1);
+    expect(mocks.refreshRuntimeConfigFromDisk).toHaveBeenCalledWith();
+
+    const { respond: filesRespond, promise: filesPromise } = makeCall("agents.files.list", {
+      agentId: "ready-agent",
+    });
+    await filesPromise;
+    expect(filesRespond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({ agentId: "ready-agent" }),
+      undefined,
+    );
+  });
+
+  it("skips an extra refresh when the written agent is already runtime-visible", async () => {
+    mocks.loadConfigReturn = { gateway: { reload: { mode: "off" } } };
+    mocks.writeConfigFile.mockImplementationOnce(async (cfg: unknown) => {
+      if (cfg && typeof cfg === "object") {
+        const nextConfig = { ...(cfg as Record<string, unknown>) };
+        mocks.state.writtenConfig = nextConfig;
+        mocks.state.runtimeConfig = nextConfig;
+        return;
+      }
+      mocks.state.writtenConfig = {};
+      mocks.state.runtimeConfig = {};
+    });
+
+    const { respond, promise } = makeCall("agents.create", {
+      name: "Visible Agent",
+      workspace: "/home/user/agents/visible",
+    });
+    await promise;
+
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        ok: true,
+        agentId: "visible-agent",
+      }),
+      undefined,
+    );
+    expect(mocks.refreshRuntimeConfigFromDisk).not.toHaveBeenCalled();
+  });
+
+  it("retries runtime refresh during readiness polling after transient failures", async () => {
+    const previousTimeout = process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS;
+    const previousPoll = process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS;
+    process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS = "250";
+    process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS = "10";
+    mocks.state.runtimeConfig = null;
+    let refreshAttempts = 0;
+    mocks.refreshRuntimeConfigFromDisk.mockImplementation(async () => {
+      refreshAttempts += 1;
+      if (refreshAttempts === 1) {
+        throw new Error("temporary refresh failure");
+      }
+      mocks.state.runtimeConfig = mocks.state.writtenConfig
+        ? { ...mocks.state.writtenConfig }
+        : null;
+    });
+    try {
+      const { respond, promise } = makeCall("agents.create", {
+        name: "Retry Agent",
+        workspace: "/home/user/agents/retry",
+      });
+      await promise;
+
+      expect(respond).toHaveBeenCalledWith(
+        true,
+        expect.objectContaining({
+          ok: true,
+          agentId: "retry-agent",
+        }),
+        undefined,
+      );
+      expect(refreshAttempts).toBeGreaterThan(1);
+    } finally {
+      mocks.refreshRuntimeConfigFromDisk.mockImplementation(async () => {
+        if (!mocks.state.runtimeSnapshotActive) {
+          return;
+        }
+        mocks.state.runtimeConfig = mocks.state.writtenConfig
+          ? { ...mocks.state.writtenConfig }
+          : mocks.state.runtimeConfig;
+      });
+      if (previousTimeout === undefined) {
+        delete process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS;
+      } else {
+        process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS = previousTimeout;
+      }
+      if (previousPoll === undefined) {
+        delete process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS;
+      } else {
+        process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS = previousPoll;
+      }
+    }
+  });
+
+  it("uses the latest disk-visible config during readiness refresh", async () => {
+    mocks.state.runtimeConfig = null;
+    let refreshAttempts = 0;
+    const refreshPayloads: Array<Record<string, unknown> | undefined> = [];
+    mocks.refreshRuntimeConfigFromDisk.mockImplementation(async (cfg?: Record<string, unknown>) => {
+      refreshAttempts += 1;
+      refreshPayloads.push(cfg ? { ...cfg } : undefined);
+      if (refreshAttempts === 1) {
+        // Simulate a concurrent config write landing after agents.create wrote its initial config.
+        mocks.state.writtenConfig = {
+          ...mocks.state.writtenConfig,
+          __agentIds: ["stale-safe-agent", "newer-agent"],
+        };
+        return;
+      }
+      mocks.state.runtimeConfig = mocks.state.writtenConfig
+        ? { ...mocks.state.writtenConfig }
+        : null;
+    });
+
+    const { respond, promise } = makeCall("agents.create", {
+      name: "Stale Safe Agent",
+      workspace: "/home/user/agents/stale-safe",
+    });
+    await promise;
+
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        ok: true,
+        agentId: "stale-safe-agent",
+      }),
+      undefined,
+    );
+    expect(refreshAttempts).toBeGreaterThan(1);
+    const lastRefresh = refreshPayloads.at(-1);
+    expect(lastRefresh).toBeUndefined();
+    expect((mocks.state.runtimeConfig as { __agentIds?: string[] } | null)?.__agentIds).toEqual(
+      expect.arrayContaining(["stale-safe-agent", "newer-agent"]),
+    );
+  });
+
   it("ensures workspace is set up before writing config", async () => {
     const callOrder: string[] = [];
     mocks.ensureAgentWorkspace.mockImplementation(async () => {
       callOrder.push("ensureAgentWorkspace");
     });
-    mocks.writeConfigFile.mockImplementation(async () => {
+    mocks.writeConfigFile.mockImplementation(async (cfg: unknown) => {
       callOrder.push("writeConfigFile");
+      if (cfg && typeof cfg === "object") {
+        mocks.state.writtenConfig = { ...(cfg as Record<string, unknown>) };
+      }
     });
 
     const { promise } = makeCall("agents.create", {
@@ -377,6 +656,91 @@ describe("agents.create", () => {
       "utf-8",
     );
   });
+
+  it("fails readiness when runtime config never includes the newly written agent", async () => {
+    const previousTimeout = process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS;
+    const previousPoll = process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS;
+    process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS = "25";
+    process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS = "5";
+    mocks.state.runtimeSnapshotActive = false;
+    try {
+      const { respond, promise } = makeCall("agents.create", {
+        name: "Never Visible Agent",
+        workspace: "/tmp/ws",
+      });
+      await promise;
+
+      expect(mocks.refreshRuntimeConfigFromDisk).toHaveBeenCalledTimes(1);
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({
+          message: expect.stringContaining("created but not yet resolvable"),
+        }),
+      );
+    } finally {
+      if (previousTimeout === undefined) {
+        delete process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS;
+      } else {
+        process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS = previousTimeout;
+      }
+      if (previousPoll === undefined) {
+        delete process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS;
+      } else {
+        process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS = previousPoll;
+      }
+    }
+  });
+
+  it("waits for an in-flight readiness refresh to settle before timing out", async () => {
+    const previousTimeout = process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS;
+    const previousPoll = process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS;
+    process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS = "20";
+    process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS = "5";
+    mocks.state.runtimeConfig = null;
+    const refreshControl: { release: (() => void) | null } = { release: null };
+    mocks.refreshRuntimeConfigFromDisk.mockImplementation(
+      async () =>
+        await new Promise<void>((resolve) => {
+          refreshControl.release = resolve;
+        }),
+    );
+    try {
+      const { respond, promise } = makeCall("agents.create", {
+        name: "Slow Refresh Agent",
+        workspace: "/tmp/ws",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(respond).not.toHaveBeenCalled();
+
+      const release = refreshControl.release;
+      if (typeof release !== "function") {
+        throw new Error("expected readiness refresh to start");
+      }
+      release();
+      await promise;
+
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({
+          message: expect.stringContaining("created but not yet resolvable"),
+        }),
+      );
+      expect(mocks.refreshRuntimeConfigFromDisk).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousTimeout === undefined) {
+        delete process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS;
+      } else {
+        process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_TIMEOUT_MS = previousTimeout;
+      }
+      if (previousPoll === undefined) {
+        delete process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS;
+      } else {
+        process.env.OPENCLAW_GATEWAY_AGENT_CREATE_READY_POLL_MS = previousPoll;
+      }
+    }
+  });
 });
 
 describe("agents.update", () => {
@@ -384,7 +748,6 @@ describe("agents.update", () => {
     vi.clearAllMocks();
     mocks.loadConfigReturn = {};
     mocks.findAgentEntryIndex.mockReturnValue(0);
-    mocks.applyAgentConfig.mockImplementation((_cfg, _opts) => ({}));
   });
 
   it("updates an existing agent successfully", async () => {
@@ -599,7 +962,7 @@ describe("agents.files.get/set symlink safety", () => {
     });
     mocks.fsStat.mockImplementation(async (...args: unknown[]) => {
       const p = typeof args[0] === "string" ? args[0] : "";
-      if (p === target) {
+      if (path.resolve(p) === target) {
         return targetStat;
       }
       throw createEnoentError();
@@ -624,12 +987,16 @@ describe("agents.files.get/set symlink safety", () => {
     expect(setCall.respond).toHaveBeenCalledWith(
       true,
       expect.objectContaining({
-        file: expect.objectContaining({
-          missing: false,
-          content: "updated\n",
-        }),
+        ok: true,
+        file: expect.objectContaining({ missing: false, content: "updated\n" }),
       }),
       undefined,
+    );
+    expect(mocks.writeFileWithinRoot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rootDir: workspace,
+        relativePath: path.join("policies", "AGENTS.md"),
+      }),
     );
   });
 
