@@ -9,6 +9,11 @@ import type { OpenClawConfig } from "./runtime-api.js";
 type BlueBubblesDebounceEntry = {
   message: NormalizedWebhookMessage;
   target: WebhookTarget;
+  eventType?: string;
+  replayLifecycle?: {
+    onFlushSuccess: () => void;
+    onFlushFailure: (err: unknown) => void;
+  };
 };
 
 export type BlueBubblesDebouncer = {
@@ -107,10 +112,79 @@ function resolveBlueBubblesDebounceMs(
   return core.channel.debounce.resolveInboundDebounceMs({ cfg: config, channel: "bluebubbles" });
 }
 
+function resolveBlueBubblesFallbackChatKey(message: NormalizedWebhookMessage): string {
+  return (
+    message.chatGuid?.trim() ??
+    message.chatIdentifier?.trim() ??
+    (message.chatId ? String(message.chatId) : "dm")
+  );
+}
+
+function resolveBlueBubblesFallbackDebounceKey(
+  accountId: string,
+  message: NormalizedWebhookMessage,
+): string {
+  return `bluebubbles:${accountId}:${resolveBlueBubblesFallbackChatKey(message)}:${message.senderId}`;
+}
+
 export function createBlueBubblesDebounceRegistry(params: {
   processMessage: (message: NormalizedWebhookMessage, target: WebhookTarget) => Promise<void>;
 }): BlueBubblesDebounceRegistry {
   const targetDebouncers = new Map<WebhookTarget, BlueBubblesDebouncer>();
+  const stableUpdatedMessageTails = new Map<string, Promise<void>>();
+  const resolveStableUpdatedMessageIdentity = (message: NormalizedWebhookMessage) => {
+    const messageId = message.messageId?.trim();
+    const associatedMessageGuid = message.associatedMessageGuid?.trim();
+    const stableIdentity = messageId || associatedMessageGuid;
+    if (stableIdentity) {
+      return `msg:${stableIdentity}`;
+    }
+    return undefined;
+  };
+  const hasStableUpdatedMessageIdentity = (message: NormalizedWebhookMessage): boolean =>
+    Boolean(resolveStableUpdatedMessageIdentity(message));
+  const serializeStableUpdatedMessage = async (
+    serialKey: string,
+    task: () => Promise<void>,
+  ): Promise<void> => {
+    const previous = stableUpdatedMessageTails.get(serialKey) ?? Promise.resolve();
+    let releaseCurrentTail: (() => void) | undefined;
+    const currentMarker = new Promise<void>((resolve) => {
+      releaseCurrentTail = resolve;
+    });
+    const currentTail = previous.catch(() => undefined).then(() => currentMarker);
+    stableUpdatedMessageTails.set(serialKey, currentTail);
+    try {
+      await previous.catch(() => undefined);
+      await task();
+    } finally {
+      releaseCurrentTail?.();
+      if (stableUpdatedMessageTails.get(serialKey) === currentTail) {
+        stableUpdatedMessageTails.delete(serialKey);
+      }
+    }
+  };
+  const settleReplayLifecycle = (
+    entries: BlueBubblesDebounceEntry[],
+    result: "success" | "failure",
+    err?: unknown,
+  ) => {
+    for (const entry of entries) {
+      const lifecycle = entry.replayLifecycle;
+      if (!lifecycle) {
+        continue;
+      }
+      try {
+        if (result === "success") {
+          lifecycle.onFlushSuccess();
+        } else {
+          lifecycle.onFlushFailure(err);
+        }
+      } catch {
+        // Keep debounce flush resilient even if replay bookkeeping throws.
+      }
+    }
+  };
 
   return {
     getOrCreateDebouncer: (target) => {
@@ -140,15 +214,21 @@ export function createBlueBubblesDebounceRegistry(params: {
           if (messageId) {
             return `bluebubbles:${account.accountId}:msg:${messageId}`;
           }
-
-          const chatKey =
-            msg.chatGuid?.trim() ??
-            msg.chatIdentifier?.trim() ??
-            (msg.chatId ? String(msg.chatId) : "dm");
-          return `bluebubbles:${account.accountId}:${chatKey}:${msg.senderId}`;
+          const fallbackKey = resolveBlueBubblesFallbackDebounceKey(account.accountId, msg);
+          // Separate updated-message events from new-message events in the
+          // fallback bucket so guid-less edits don't merge with or reset the
+          // timer of the original new-message debounce entry.
+          return entry.eventType === "updated-message" ? `${fallbackKey}:edit` : fallbackKey;
         },
         shouldDebounce: (entry) => {
           const msg = entry.message;
+          if (entry.eventType === "updated-message") {
+            // Only fast-path edits when we can flush the matching identity bucket safely.
+            // GUID-less edits are better debounced so they do not flush an unrelated
+            // fallback bucket or miss the original pending bucket when BlueBubbles
+            // shifts the timestamp between webhook deliveries.
+            return !hasStableUpdatedMessageIdentity(msg);
+          }
           // Skip debouncing for from-me messages (they're just cached, not processed)
           if (msg.fromMe) {
             return false;
@@ -170,9 +250,15 @@ export function createBlueBubblesDebounceRegistry(params: {
           const flushTarget = entries[0].target;
 
           if (entries.length === 1) {
-            // Single message - process normally
-            await params.processMessage(entries[0].message, flushTarget);
-            return;
+            try {
+              // Single message - process normally
+              await params.processMessage(entries[0].message, flushTarget);
+              settleReplayLifecycle(entries, "success");
+              return;
+            } catch (err) {
+              settleReplayLifecycle(entries, "failure", err);
+              throw err;
+            }
           }
 
           // Multiple messages - combine and process
@@ -186,7 +272,13 @@ export function createBlueBubblesDebounceRegistry(params: {
             );
           }
 
-          await params.processMessage(combined, flushTarget);
+          try {
+            await params.processMessage(combined, flushTarget);
+            settleReplayLifecycle(entries, "success");
+          } catch (err) {
+            settleReplayLifecycle(entries, "failure", err);
+            throw err;
+          }
         },
         onError: (err) => {
           runtime.error?.(
@@ -195,8 +287,43 @@ export function createBlueBubblesDebounceRegistry(params: {
         },
       });
 
-      targetDebouncers.set(target, debouncer);
-      return debouncer;
+      const wrappedDebouncer: BlueBubblesDebouncer = {
+        enqueue: async (entry) => {
+          const stableIdentity =
+            entry.eventType === "updated-message"
+              ? resolveStableUpdatedMessageIdentity(entry.message)
+              : undefined;
+          const runEnqueue = async () => {
+            if (stableIdentity) {
+              const messageId = entry.message.messageId?.trim();
+              const associatedMessageGuid = entry.message.associatedMessageGuid?.trim();
+              if (associatedMessageGuid && !messageId) {
+                // Flush both balloon and msg buckets keyed by the assoc GUID
+                // so any buffered pre-edit body or preview doesn't fire after
+                // the immediate edit dispatch.
+                await debouncer.flushKey(
+                  `bluebubbles:${account.accountId}:balloon:${associatedMessageGuid}`,
+                );
+                await debouncer.flushKey(
+                  `bluebubbles:${account.accountId}:msg:${associatedMessageGuid}`,
+                );
+              }
+            }
+            await debouncer.enqueue(entry);
+          };
+          if (!stableIdentity) {
+            await runEnqueue();
+            return;
+          }
+          await serializeStableUpdatedMessage(
+            `bluebubbles:${account.accountId}:${stableIdentity}`,
+            runEnqueue,
+          );
+        },
+        flushKey: (key) => debouncer.flushKey(key),
+      };
+      targetDebouncers.set(target, wrappedDebouncer);
+      return wrappedDebouncer;
     },
     removeDebouncer: (target) => {
       targetDebouncers.delete(target);
