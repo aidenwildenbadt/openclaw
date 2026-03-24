@@ -40,6 +40,7 @@ import {
   SILENT_REPLY_TOKEN,
 } from "../tokens.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
+import { runAbortableDelivery } from "./abortable-delivery.js";
 import {
   buildEmbeddedRunExecutionParams,
   resolveModelFallbackOptions,
@@ -101,6 +102,7 @@ export async function runAgentTurnWithFallback(params: {
   activeSessionStore?: Record<string, SessionEntry>;
   storePath?: string;
   resolvedVerboseLevel: VerboseLevel;
+  shouldSuppressOutboundDelivery?: () => boolean;
 }): Promise<AgentRunLoopResult> {
   const TRANSIENT_HTTP_RETRY_DELAY_MS = 2_500;
   let didLogHeartbeatStrip = false;
@@ -214,6 +216,8 @@ export async function runAgentTurnWithFallback(params: {
             blockStreamingEnabled: params.blockStreamingEnabled,
             blockReplyPipeline,
             directlySentBlockKeys,
+            shouldSuppressDelivery: params.shouldSuppressOutboundDelivery,
+            deliveryAbortSignal: params.opts?.abortSignal,
           })
         : undefined;
       const onToolResult = params.opts?.onToolResult;
@@ -370,7 +374,13 @@ export async function runAgentTurnWithFallback(params: {
                 blockReplyBreak: params.resolvedBlockStreamingBreak,
                 blockReplyChunking: params.blockReplyChunking,
                 onPartialReply: async (payload) => {
+                  if (params.shouldSuppressOutboundDelivery?.()) {
+                    return;
+                  }
                   const textForTyping = await handlePartialForTyping(payload);
+                  if (params.shouldSuppressOutboundDelivery?.()) {
+                    return;
+                  }
                   if (!params.opts?.onPartialReply || textForTyping === undefined) {
                     return;
                   }
@@ -386,7 +396,13 @@ export async function runAgentTurnWithFallback(params: {
                 onReasoningStream:
                   params.typingSignals.shouldStartOnReasoning || params.opts?.onReasoningStream
                     ? async (payload) => {
+                        if (params.shouldSuppressOutboundDelivery?.()) {
+                          return;
+                        }
                         await params.typingSignals.signalReasoningDelta();
+                        if (params.shouldSuppressOutboundDelivery?.()) {
+                          return;
+                        }
                         await params.opts?.onReasoningStream?.({
                           text: payload.text,
                           mediaUrls: payload.mediaUrls,
@@ -415,6 +431,9 @@ export async function runAgentTurnWithFallback(params: {
                   if (evt.stream === "compaction") {
                     const phase = typeof evt.data.phase === "string" ? evt.data.phase : "";
                     if (phase === "start") {
+                      if (params.shouldSuppressOutboundDelivery?.()) {
+                        return;
+                      }
                       if (params.opts?.onCompactionStart) {
                         await params.opts.onCompactionStart();
                       } else if (params.opts?.onBlockReply) {
@@ -478,13 +497,29 @@ export async function runAgentTurnWithFallback(params: {
                             if (skip) {
                               return;
                             }
-                            if (text !== undefined) {
-                              await params.typingSignals.signalTextDelta(text);
+                            if (params.shouldSuppressOutboundDelivery?.()) {
+                              return;
                             }
-                            await onToolResult({
-                              ...payload,
-                              text,
+                            await params.typingSignals.signalTextDelta(text);
+                            if (params.shouldSuppressOutboundDelivery?.()) {
+                              return;
+                            }
+                            const delivery = await runAbortableDelivery({
+                              shouldAbort: params.shouldSuppressOutboundDelivery ?? (() => false),
+                              outerSignal: params.opts?.abortSignal,
+                              run: async (abortSignal) => {
+                                await onToolResult(
+                                  {
+                                    ...payload,
+                                    text,
+                                  },
+                                  { abortSignal },
+                                );
+                              },
                             });
+                            if (!delivery.completed) {
+                              return;
+                            }
                           })
                           .catch((err) => {
                             // Keep chain healthy after an error so later tool results still deliver.

@@ -1,6 +1,6 @@
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import type { ReasoningLevel, VerboseLevel } from "../auto-reply/thinking.js";
-import type { ReplyPayload } from "../auto-reply/types.js";
+import type { BlockReplyContext, ReplyPayload } from "../auto-reply/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { HookRunner } from "../plugins/hooks.js";
 import type { BlockReplyChunking } from "./pi-embedded-block-chunker.js";
@@ -11,13 +11,19 @@ export type ToolResultFormat = "markdown" | "plain";
 export type SubscribeEmbeddedPiSessionParams = {
   session: AgentSession;
   runId: string;
+  /** Originating message channel/provider (e.g. telegram, bluebubbles). */
+  messageProvider?: string;
+  /** Originating delivery target for the current run (chat/user/thread key). */
+  originatingTo?: string;
+  /** Originating account id for provider-scoped sends (optional). */
+  accountId?: string;
   hookRunner?: HookRunner;
   verboseLevel?: VerboseLevel;
   reasoningMode?: ReasoningLevel;
   toolResultFormat?: ToolResultFormat;
   shouldEmitToolResult?: () => boolean;
   shouldEmitToolOutput?: () => boolean;
-  onToolResult?: (payload: ReplyPayload) => void | Promise<void>;
+  onToolResult?: (payload: ReplyPayload, context?: BlockReplyContext) => void | Promise<void>;
   onReasoningStream?: (payload: { text?: string; mediaUrls?: string[] }) => void | Promise<void>;
   /** Called when a thinking/reasoning block ends (</think> tag processed). */
   onReasoningEnd?: () => void | Promise<void>;
@@ -31,6 +37,9 @@ export type SubscribeEmbeddedPiSessionParams = {
   onAgentEvent?: (evt: { stream: string; data: Record<string, unknown> }) => void | Promise<void>;
   enforceFinalTag?: boolean;
   config?: OpenClawConfig;
+  currentChannelProvider?: string;
+  currentChannelId?: string;
+  currentThreadTs?: string;
   sessionKey?: string;
   /** Ephemeral session UUID — regenerated on /new and /reset. */
   sessionId?: string;
