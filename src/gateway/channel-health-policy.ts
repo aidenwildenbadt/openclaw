@@ -9,6 +9,7 @@ export type ChannelHealthSnapshot = {
   busy?: boolean;
   activeRuns?: number;
   lastRunActivityAt?: number | null;
+  lastConnectedAt?: number | null;
   lastEventAt?: number | null;
   lastStartAt?: number | null;
   reconnectAttempts?: number;
@@ -77,6 +78,10 @@ export function evaluateChannelHealth(
     typeof snapshot.lastRunActivityAt === "number" && Number.isFinite(snapshot.lastRunActivityAt)
       ? snapshot.lastRunActivityAt
       : null;
+  const lastConnectedAt =
+    typeof snapshot.lastConnectedAt === "number" && Number.isFinite(snapshot.lastConnectedAt)
+      ? snapshot.lastConnectedAt
+      : null;
   const busyStateInitializedForLifecycle =
     lastStartAt == null || (lastRunActivityAt != null && lastRunActivityAt >= lastStartAt);
 
@@ -103,27 +108,41 @@ export function evaluateChannelHealth(
       return { healthy: true, reason: "startup-connect-grace" };
     }
   }
+  const normalizedMode =
+    typeof snapshot.mode === "string" ? snapshot.mode.trim().toLowerCase() : undefined;
+  if (
+    policy.channelId === "telegram" &&
+    normalizedMode === "polling" &&
+    snapshot.connected !== true
+  ) {
+    return { healthy: false, reason: lastConnectedAt == null ? "stale-socket" : "disconnected" };
+  }
   if (snapshot.connected === false) {
     return { healthy: false, reason: "disconnected" };
   }
-  // Skip stale-socket check for Telegram (long-polling mode) and any channel
-  // explicitly operating in webhook mode. In these cases, there is no persistent
-  // outgoing socket that can go half-dead, so the lack of incoming events
-  // does not necessarily indicate a connection failure.
-  if (
-    policy.channelId !== "telegram" &&
-    snapshot.mode !== "webhook" &&
+  const lastEventAt =
+    typeof snapshot.lastEventAt === "number" && Number.isFinite(snapshot.lastEventAt)
+      ? snapshot.lastEventAt
+      : null;
+  const shouldCheckStaleSocket =
     snapshot.connected === true &&
-    snapshot.lastEventAt != null
-  ) {
-    if (lastStartAt != null && snapshot.lastEventAt < lastStartAt) {
+    lastEventAt != null &&
+    (policy.channelId === "telegram"
+      ? typeof snapshot.mode === "string" && normalizedMode === "polling"
+      : normalizedMode !== "webhook");
+  // Telegram should only opt into stale-socket checks when the runtime
+  // explicitly reports polling mode. Webhook accounts can inherit stale polling
+  // timestamps during restarts, so treating "mode missing" as polling would
+  // cause healthy webhook listeners to be restarted.
+  if (shouldCheckStaleSocket) {
+    if (lastStartAt != null && lastEventAt < lastStartAt) {
       const lifecycleEventGap = Math.max(0, policy.now - lastStartAt);
       if (lifecycleEventGap <= policy.staleEventThresholdMs) {
         return { healthy: true, reason: "healthy" };
       }
       return { healthy: false, reason: "stale-socket" };
     }
-    const eventAge = policy.now - snapshot.lastEventAt;
+    const eventAge = policy.now - lastEventAt;
     if (eventAge > policy.staleEventThresholdMs) {
       return { healthy: false, reason: "stale-socket" };
     }
