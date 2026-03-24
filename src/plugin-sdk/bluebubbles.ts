@@ -51,6 +51,7 @@ export type {
   ChannelMessageActionName,
 } from "../channels/plugins/types.js";
 export type { ChannelPlugin } from "../channels/plugins/types.plugin.js";
+export { createReplyPrefixOptions } from "../channels/reply-prefix.js";
 export { createChannelReplyPipeline } from "./channel-reply-pipeline.js";
 export type { OpenClawConfig } from "../config/config.js";
 export type { DmPolicy, GroupPolicy } from "../config/types.js";
@@ -80,6 +81,7 @@ export { isAllowedParsedChatSender } from "./allow-from.js";
 export { readBooleanParam } from "./boolean-param.js";
 export { mapAllowFromEntries } from "./channel-config-helpers.js";
 export { createChannelPairingController } from "./channel-pairing.js";
+export { createScopedPairingAccess } from "./pairing-access.js";
 export { resolveRequestUrl } from "./request-url.js";
 export {
   buildComputedAccountStatusSnapshot,
@@ -87,6 +89,7 @@ export {
 } from "./status-helpers.js";
 export { extractToolSend } from "./tool-send.js";
 export {
+  beginWebhookRequestPipelineOrReject,
   createWebhookInFlightLimiter,
   normalizeWebhookPath,
   readWebhookBodyOrReject,
