@@ -1770,13 +1770,16 @@ export function recoverOrphanedUserMessagesForPrompt(params: {
   recoveredImages: ImageContent[];
 } {
   const orphanedUserCarryForward: string[] = [];
-  const recoveredImages: ImageContent[] = [];
+  const recoveredImageGroups: ImageContent[][] = [];
   let orphanedUserCount = 0;
   let leafEntry = params.sessionManager.getLeafEntry();
   while (leafEntry?.type === "message" && leafEntry.message?.role === "user") {
     orphanedUserCount++;
     const carryForwardText = stringifyUserMessageContentForPrompt(leafEntry.message);
-    recoveredImages.push(...extractUserMessageImages(leafEntry.message));
+    const leafImages = extractUserMessageImages(leafEntry.message);
+    if (leafImages.length > 0) {
+      recoveredImageGroups.push(leafImages);
+    }
     if (carryForwardText.length > 0) {
       orphanedUserCarryForward.push(carryForwardText);
     }
@@ -1790,7 +1793,9 @@ export function recoverOrphanedUserMessagesForPrompt(params: {
   if (orphanedUserCount === 0) {
     return { prompt: params.prompt, recoveredCount: 0, mergedCount: 0, recoveredImages: [] };
   }
-  const chronologicalRecoveredImages = dedupeImageContents(recoveredImages.toReversed());
+  const chronologicalRecoveredImages = dedupeImageContents(
+    recoveredImageGroups.toReversed().flat(),
+  );
 
   const sessionContext = params.sessionManager.buildSessionContext();
   params.replaceMessages(sessionContext.messages);
