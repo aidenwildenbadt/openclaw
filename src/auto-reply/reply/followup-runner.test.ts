@@ -656,6 +656,7 @@ describe("createFollowupRunner reply threading", () => {
         text: "final",
         replyToId: "msg-42",
       }),
+      expect.objectContaining({ abortSignal: expect.any(AbortSignal) }),
     );
   });
 
@@ -697,6 +698,7 @@ describe("createFollowupRunner reply threading", () => {
         isCompactionNotice: true,
         replyToId: "msg-42",
       }),
+      expect.objectContaining({ abortSignal: expect.any(AbortSignal) }),
     );
     expect(onBlockReply).toHaveBeenNthCalledWith(
       2,
@@ -704,6 +706,7 @@ describe("createFollowupRunner reply threading", () => {
         text: "final",
         replyToId: "msg-42",
       }),
+      expect.objectContaining({ abortSignal: expect.any(AbortSignal) }),
     );
   });
 });
@@ -988,7 +991,10 @@ describe("createFollowupRunner messaging tool dedupe", () => {
 
     expect(routeReplyMock).toHaveBeenCalled();
     expect(onBlockReply).toHaveBeenCalledTimes(1);
-    expect(onBlockReply).toHaveBeenCalledWith(expect.objectContaining({ text: "hello world!" }));
+    expect(onBlockReply).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "hello world!" }),
+      expect.objectContaining({ abortSignal: expect.any(AbortSignal) }),
+    );
   });
 
   it("routes followups with originating account/thread metadata", async () => {

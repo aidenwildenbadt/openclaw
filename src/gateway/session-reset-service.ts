@@ -322,7 +322,7 @@ export async function performGatewaySessionReset(params: {
       entry,
       legacyKey,
       canonicalKey,
-      reason: "session-reset",
+      reason: params.reason === "new" ? "session-delete" : "session-reset",
     });
     if (mutationCleanupError) {
       return { ok: false, error: mutationCleanupError };
